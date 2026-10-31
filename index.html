@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>תקציב הבית</title>
+  <meta name="description" content="ניהול תקציב ביתי – הכנסות, חיובים קבועים, תשלומים והוצאות משתנות עם צפי חודשי ותובנות">
+  <meta name="theme-color" content="#1f5fae">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="title">סקירה</h1>
+    <button class="icon-btn" data-action="settings" aria-label="הגדרות וגיבוי">⚙️</button>
+  </header>
+
+  <main id="view"></main>
+
+  <button id="fab" class="fab" data-action="add-tx" aria-label="הוספת תנועה">+</button>
+
+  <nav class="nav">
+    <button data-action="tab" data-tab="dashboard"><span>🏠</span>סקירה</button>
+    <button data-action="tab" data-tab="transactions"><span>🧾</span>תנועות</button>
+    <button data-action="tab" data-tab="fixed"><span>📌</span>קבועים</button>
+    <button data-action="tab" data-tab="history"><span>📊</span>היסטוריה</button>
+    <button data-action="tab" data-tab="insights"><span>💡</span>תובנות<b id="insight-badge" class="badge" hidden></b></button>
+  </nav>
+
+  <dialog id="modal"></dialog>
+  <div id="toast" class="toast" role="status"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
