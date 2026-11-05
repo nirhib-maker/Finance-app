@@ -2,6 +2,7 @@ package com.nirhib.kidsreminders
 
 import android.app.Notification
 import android.app.Person
+import android.os.Build
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -79,8 +80,10 @@ class WhatsAppListener : NotificationListenerService() {
         return arr.mapNotNull { p ->
             val b = p as? Bundle ?: return@mapNotNull null
             val text = b.getCharSequence("text")?.toString() ?: return@mapNotNull null
-            val person = b.getParcelable<Person>("sender_person")
-            val sender = person?.name?.toString() ?: b.getCharSequence("sender")?.toString() ?: ""
+            val personName = if (Build.VERSION.SDK_INT >= 28) {
+                b.getParcelable<Person>("sender_person")?.name?.toString()
+            } else null
+            val sender = personName ?: b.getCharSequence("sender")?.toString() ?: ""
             Msg(sender, text, b.getLong("time", System.currentTimeMillis()))
         }
     }
