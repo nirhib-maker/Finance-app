@@ -13,6 +13,7 @@ import android.provider.Settings as AndroidSettings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -47,19 +48,52 @@ class MainActivity : Activity() {
         window.decorView.layoutDirection = View.LAYOUT_DIRECTION_RTL
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        tabBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(8), dp(8), dp(8), 0)
+
+        // כותרת עליונה משלנו (בלי ActionBar) – שם האפליקציה + לשוניות, תמיד גלויה
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(accent)
+            setPadding(dp(12), dp(8), dp(12), dp(10))
         }
+        header.addView(TextView(this).apply {
+            text = getString(R.string.app_name)
+            textSize = 20f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(dp(4), 0, dp(4), dp(8))
+        })
+        tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        header.addView(tabBar)
+
         content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(8), dp(16), dp(32))
         }
-        root.addView(tabBar)
-        root.addView(ScrollView(this).apply { addView(content) },
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        scroll = ScrollView(this).apply { addView(content) }
+        root.addView(header)
+        root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
+
+        // באנדרואיד 15 האפליקציה מצוירת על כל המסך – משאירים מקום לשורת הסטטוס ולכפתורי הניווט
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            val top: Int
+            val bottom: Int
+            if (Build.VERSION.SDK_INT >= 30) {
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
+                top = bars.top; bottom = bars.bottom
+            } else {
+                @Suppress("DEPRECATION")
+                top = insets.systemWindowInsetTop
+                @Suppress("DEPRECATION")
+                bottom = insets.systemWindowInsetBottom
+            }
+            header.setPadding(dp(12), top + dp(8), dp(12), dp(10))
+            root.setPadding(0, 0, 0, bottom)
+            insets
+        }
     }
+
+    private lateinit var scroll: ScrollView
 
     override fun onResume() {
         super.onResume()
@@ -72,10 +106,12 @@ class MainActivity : Activity() {
             tabBar.addView(Button(this).apply {
                 text = t.label
                 isAllCaps = false
-                setTextColor(if (t == tab) 0xFFFFFFFF.toInt() else accent)
-                background = rounded(if (t == tab) accent else 0x1A5B4BC4)
-                setOnClickListener { tab = t; render() }
-            }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
+                textSize = 15f
+                stateListAnimator = null
+                setTextColor(if (t == tab) accent else 0xFFFFFFFF.toInt())
+                background = rounded(if (t == tab) 0xFFFFFFFF.toInt() else 0x33FFFFFF)
+                setOnClickListener { tab = t; render(); scroll.scrollTo(0, 0) }
+            }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
         }
         content.removeAllViews()
         when (tab) {
