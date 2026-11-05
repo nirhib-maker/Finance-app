@@ -86,8 +86,8 @@ class DigestWorker(context: Context, params: WorkerParameters) : CoroutineWorker
 class ChatWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val text = inputData.getString("text") ?: return@withContext Result.success()
-        val answer = Actions.chat(applicationContext, text)
-        Notifier.notifyAssistant(applicationContext, "🤖 עוזר", answer, showAddAll = false)
+        val result = Actions.chat(applicationContext, text)
+        Notifier.notifyAssistant(applicationContext, "🤖 עוזר", result.text, showAddAll = false, showRetry = result.failed)
         Result.success()
     }
 }

@@ -74,8 +74,33 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(8), dp(16), dp(32))
         }
         scroll = ScrollView(this).apply { addView(content) }
+
+        // שורת הכתיבה לעוזר – מחוץ לגלילה, צמודה לתחתית (ומעל המקלדת כשהיא פתוחה)
+        chatInput = EditText(this).apply {
+            hint = "כתוב לעוזר…"
+            maxLines = 4
+            textSize = 15f
+        }
+        sendButton = Button(this).apply {
+            text = "שלח"
+            isAllCaps = false
+            setTextColor(0xFFFFFFFF.toInt())
+            background = rounded(accent)
+            setOnClickListener { sendChat(chatInput.text.toString()) }
+        }
+        chatBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = rounded(0x1A5B4BC4)
+            addView(chatInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(sendButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44)).apply { marginStart = dp(8) })
+            visibility = View.GONE
+        }
+
         root.addView(header)
         root.addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(chatBar, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         setContentView(root)
 
         // באנדרואיד 15 האפליקציה מצוירת על כל המסך – משאירים מקום לשורת הסטטוס ולכפתורי הניווט
@@ -98,6 +123,9 @@ class MainActivity : Activity() {
     }
 
     private lateinit var scroll: ScrollView
+    private lateinit var chatBar: LinearLayout
+    private lateinit var chatInput: EditText
+    private lateinit var sendButton: Button
 
     override fun onResume() {
         super.onResume()
@@ -127,6 +155,7 @@ class MainActivity : Activity() {
             }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
         }
         content.removeAllViews()
+        chatBar.visibility = if (tab == Tab.CHAT) View.VISIBLE else View.GONE
         when (tab) {
             Tab.SUMMARY -> renderSummary()
             Tab.CHAT -> renderChat()
@@ -271,19 +300,28 @@ class MainActivity : Activity() {
         }
         content.addView(text(
             "אפשר לכתוב למשל: \"תוסיף את 1 ו-3\", \"בלי הטיול\", \"תזיז את האסיפה ל-19:00\", " +
-                "\"מה לני צריכה מחר?\", \"תזכיר לי שרומי צריכה 20 ש״ח ביום ראשון\".",
+                "\"מה לני צריכה מחר?\", \"תזכיר לי שרומי צריכה 20 ש״ח ביום ראשון\". לחיצה ארוכה על הודעה – העתקה.",
             13f, dim = true,
         ).apply { setPadding(0, dp(8), 0, dp(8)) })
 
         val turns = store.chat().takeLast(40)
         if (turns.isEmpty()) content.addView(text("עוד אין שיחה. הודעת הערב תופיע כאן, ואפשר גם לכתוב עכשיו.", 14f, dim = true))
-        turns.forEach { t ->
+        turns.forEachIndexed { index, t ->
+            val failed = t.retryText != null
             val bubble = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                background = rounded(if (t.fromUser) 0x335B4BC4 else 0x14808080)
+                background = rounded(when {
+                    t.fromUser -> 0x335B4BC4
+                    failed -> 0x33E8618C
+                    else -> 0x14808080
+                })
                 setPadding(dp(12), dp(8), dp(12), dp(8))
-                addView(text(t.text, 15f))
+                addView(text(t.text, 15f).apply { setTextIsSelectable(true) })
                 addView(text(formatTime(t.time), 11f, dim = true))
+                // שגיאה אחרונה בשיחה – אפשר לשלוח שוב בלחיצה
+                if (failed && index == turns.lastIndex && !chatBusy) {
+                    addView(smallButton("🔁 שלח שוב") { sendChat(t.retryText!!) })
+                }
             }
             val wrap = LinearLayout(this).apply {
                 gravity = if (t.fromUser) Gravity.START else Gravity.END
@@ -292,26 +330,30 @@ class MainActivity : Activity() {
             }
             content.addView(wrap, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         }
-        if (chatBusy) content.addView(text("⏳ חושב…", 14f, dim = true).apply { setPadding(0, dp(6), 0, dp(6)) })
+        if (chatBusy) content.addView(text("⏳ חושב… (אם המודל עמוס אנסה שוב ואעבור למודל פנוי יותר)", 14f, dim = true)
+            .apply { setPadding(0, dp(6), 0, dp(6)) })
 
-        val input = EditText(this).apply {
-            hint = "כתוב לעוזר…"
-            minLines = 2
-            isEnabled = !chatBusy
-        }
-        content.addView(input)
-        content.addView(smallButton("שלח") {
-            val text = input.text.toString().trim()
-            if (text.isEmpty() || chatBusy) return@smallButton
-            chatBusy = true
-            store.addChat(true, text) // מוצג מיד, עוד לפני שהעוזר עונה
-            render()
-            background {
-                Actions.chat(this, text, alreadyRecorded = true)
-                runOnUiThread { chatBusy = false; render() }
-            }
-        })
+        chatInput.isEnabled = !chatBusy
+        sendButton.isEnabled = !chatBusy
         scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun sendChat(raw: String) {
+        val text = raw.trim()
+        if (text.isEmpty() || chatBusy) return
+        chatBusy = true
+        chatInput.setText("")
+        store.addChat(true, text) // מוצג מיד, עוד לפני שהעוזר עונה
+        render()
+        background {
+            val result = Actions.chat(this, text, alreadyRecorded = true)
+            runOnUiThread {
+                chatBusy = false
+                // נכשל? מחזירים את הטקסט לשורת הכתיבה כדי שלא צריך להקליד שוב
+                if (result.failed && chatInput.text.isBlank()) chatInput.setText(text)
+                render()
+            }
+        }
     }
 
     // ------------------------------------------------------------------ קבוצות
@@ -437,6 +479,17 @@ class MainActivity : Activity() {
         content.addView(keyInput)
         content.addView(text("מודל (ברירת מחדל: ${p.defaultModel})", 12f, dim = true))
         content.addView(modelInput)
+        val suggestions = when (p) {
+            LlmProvider.GEMINI -> listOf("gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.6-flash")
+            LlmProvider.CLAUDE -> listOf("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5")
+        }
+        content.addView(text("בחירה מהירה:", 12f, dim = true))
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            suggestions.forEach { m -> addView(smallButton(m) { modelInput.setText(m) }) }
+        })
+        if (p == LlmProvider.GEMINI) content.addView(text(
+            "כשהמודל עמוס, האפליקציה מנסה שוב ואז עוברת אוטומטית למודל קל ופנוי יותר.", 12f, dim = true))
         fun save() {
             settings.setApiKeyFor(p, keyInput.text.toString())
             settings.setModelFor(p, modelInput.text.toString())

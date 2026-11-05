@@ -18,10 +18,20 @@ class GeminiClient(
     private val model: String = LlmProvider.GEMINI.defaultModel,
     private val http: OkHttpClient = defaultClient,
     private val baseUrl: String = "https://generativelanguage.googleapis.com/v1beta",
+    /** מודלים חלופיים כשהמודל הראשי עמוס (429/503). */
+    private val fallbackModels: List<String> = FALLBACK_MODELS,
+    /** המתנות בין ניסיונות חוזרים על אותו מודל (מילישניות). */
+    private val retryDelaysMs: List<Long> = listOf(2_000, 6_000),
 ) : LlmClient {
 
     companion object {
         private val mapper = ObjectMapper()
+
+        /** מודלים קלים ופנויים יותר – מספיקים לסיכום טקסט. */
+        val FALLBACK_MODELS = listOf("gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.6-flash")
+
+        /** שגיאות זמניות (עומס / תקלה בשרת) ששווה לנסות שוב. */
+        fun isRetryable(code: Int) = code == 429 || code == 500 || code == 502 || code == 503 || code == 504
         private val JSON = "application/json; charset=utf-8".toMediaType()
         private val defaultClient = OkHttpClient.Builder()
             .callTimeout(120, TimeUnit.SECONDS)
@@ -81,21 +91,44 @@ class GeminiClient(
         }
     }
 
+    /** שגיאת HTTP מ-Gemini, עם הקוד – כדי לדעת אם לנסות שוב. */
+    class GeminiHttpException(val code: Int, message: String) : IOException(message)
+
     override fun json(system: String, user: String, schema: Map<String, Any>): String {
+        val body = buildRequestBody(system, user, schema)
+        val models = (listOf(model.trim()) + fallbackModels).filter { it.isNotBlank() }.distinct()
+        var last: Exception? = null
+        for (m in models) {
+            for (attempt in 0..retryDelaysMs.size) {
+                try {
+                    return call(m, body)
+                } catch (e: GeminiHttpException) {
+                    last = e
+                    if (!isRetryable(e.code)) throw e // מפתח שגוי / מודל לא קיים וכו' – אין טעם לנסות שוב
+                } catch (e: IOException) {
+                    last = e // ניתוק / timeout
+                }
+                if (attempt < retryDelaysMs.size) Thread.sleep(retryDelaysMs[attempt])
+            }
+        }
+        throw last ?: IOException("Gemini failed")
+    }
+
+    private fun call(m: String, body: String): String {
         val request = Request.Builder()
-            .url("$baseUrl/models/${model.trim()}:generateContent")
+            .url("$baseUrl/models/$m:generateContent")
             .header("x-goog-api-key", apiKey)
-            .post(buildRequestBody(system, user, schema).toRequestBody(JSON))
+            .post(body.toRequestBody(JSON))
             .build()
 
         http.newCall(request).execute().use { resp ->
-            val body = resp.body?.string().orEmpty()
+            val text = resp.body?.string().orEmpty()
             if (!resp.isSuccessful) {
-                val msg = runCatching { mapper.readTree(body).path("error").path("message").asText() }
-                    .getOrNull().orEmpty().ifEmpty { body.take(200) }
-                throw IOException("Gemini HTTP ${resp.code}: $msg")
+                val msg = runCatching { mapper.readTree(text).path("error").path("message").asText() }
+                    .getOrNull().orEmpty().ifEmpty { text.take(200) }
+                throw GeminiHttpException(resp.code, "Gemini HTTP ${resp.code} ($m): $msg")
             }
-            return extractText(body)
+            return extractText(text)
         }
     }
 }

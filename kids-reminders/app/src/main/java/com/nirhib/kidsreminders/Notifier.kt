@@ -83,7 +83,7 @@ object Notifier {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
     /** הודעת הערב / תשובת העוזר – תמיד באותה התראה, עם כפתור "השב" שאפשר לכתוב בו. */
-    fun notifyAssistant(context: Context, title: String, text: String, showAddAll: Boolean) {
+    fun notifyAssistant(context: Context, title: String, text: String, showAddAll: Boolean, showRetry: Boolean = false) {
         if (!canPost(context)) return
         val replyIntent = Intent(context, ActionReceiver::class.java).setAction(ActionReceiver.REPLY)
         val mutable = if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
@@ -103,6 +103,12 @@ object Notifier {
             .setContentIntent(openChat(context))
             .setOnlyAlertOnce(false)
             .addAction(reply)
+        if (showRetry) {
+            val retry = PendingIntent.getBroadcast(context, 12,
+                Intent(context, ActionReceiver::class.java).setAction(ActionReceiver.RETRY),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            b.addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, "🔁 שלח שוב", retry).build())
+        }
         if (showAddAll) {
             val addAll = PendingIntent.getBroadcast(context, 11,
                 Intent(context, ActionReceiver::class.java).setAction(ActionReceiver.ADD_ALL),
@@ -137,6 +143,7 @@ class ActionReceiver : BroadcastReceiver() {
         const val DISMISS = "com.nirhib.kidsreminders.DISMISS"
         const val REPLY = "com.nirhib.kidsreminders.REPLY"
         const val ADD_ALL = "com.nirhib.kidsreminders.ADD_ALL"
+        const val RETRY = "com.nirhib.kidsreminders.RETRY"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -148,6 +155,12 @@ class ActionReceiver : BroadcastReceiver() {
                     Notifier.notifyWorking(context, text)
                     Work.chatFromNotification(context, text)
                 }
+                return
+            }
+            RETRY -> {
+                val text = Store.get(context).lastFailedText() ?: return
+                Notifier.notifyWorking(context, text)
+                Work.chatFromNotification(context, text)
                 return
             }
         }

@@ -210,6 +210,24 @@ class GeminiClientTest {
         }
     }
 
+    @Test fun retriesThenFallsBackWhenOverloaded() {
+        val server = MockWebServer()
+        val ok = """{"candidates":[{"content":{"parts":[{"text":"{\"text\":\"שלום\"}"}]}}]}"""
+        repeat(2) { server.enqueue(MockResponse().setResponseCode(503).setBody("""{"error":{"message":"The model is overloaded"}}""")) }
+        server.enqueue(MockResponse().setResponseCode(429).setBody("""{"error":{"message":"busy"}}"""))
+        server.enqueue(MockResponse().setBody(ok))
+        server.start()
+        try {
+            val client = GeminiClient("k", "big-model", baseUrl = base(server),
+                fallbackModels = listOf("lite-model"), retryDelaysMs = listOf(0, 0))
+            assertEquals("""{"text":"שלום"}""", client.json("s", "u", AssistantPrompt.DIGEST_SCHEMA))
+            val paths = (1..4).map { server.takeRequest().path }
+            assertEquals(List(3) { "/v1beta/models/big-model:generateContent" } + "/v1beta/models/lite-model:generateContent", paths)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     @Test fun blockedPrompt() {
         assertFailsWith<IllegalStateException> {
             GeminiClient.extractText("""{"promptFeedback":{"blockReason":"SAFETY"}}""")

@@ -131,16 +131,21 @@ object Actions {
     // ------------------------------------------------------------------ שיחה עם העוזר
 
     /** שולח הודעה של ההורה לעוזר, מבצע את הפעולות ומחזיר את התשובה (כולל מה שבוצע בפועל). */
-    fun chat(context: Context, userText: String, alreadyRecorded: Boolean = false): String {
+    data class ChatResult(val text: String, val failed: Boolean)
+
+    fun chat(context: Context, userText: String, alreadyRecorded: Boolean = false): ChatResult {
         val store = Store.get(context)
         val settings = Settings(context)
         // alreadyRecorded: המסך כבר שמר את ההודעה של ההורה כדי להציג אותה מיד
         val past = store.chat().let { if (alreadyRecorded) it.dropLast(1) else it }
-        val history = past.map {
+        // הודעות שגיאה (וההודעה שנכשלה לפניהן) לא נשלחות למודל כהיסטוריה
+        val clean = past.filterIndexed { i, e -> e.retryText == null && past.getOrNull(i + 1)?.retryText == null }
+        val history = clean.map {
             ChatTurn(it.fromUser, it.text, LocalDateTime.ofInstant(Instant.ofEpochMilli(it.time), ZoneId.systemDefault()))
         }
         if (!alreadyRecorded) store.addChat(true, userText)
 
+        var failed = false
         val answer = if (!settings.useAi) {
             simpleCommand(context, userText)
         } else try {
@@ -154,10 +159,11 @@ object Actions {
                 .ifBlank { "לא הבנתי, אפשר לנסח שוב?" }
         } catch (e: Exception) {
             Log.w("Actions", "assistant failed", e)
-            "✗ לא הצלחתי להגיע ל-${settings.provider.label}: ${e.message?.take(150)}"
+            failed = true
+            "✗ לא הצלחתי להגיע ל-${settings.provider.label} (ניסיתי כמה פעמים): ${e.message?.take(150)}"
         }
-        store.addChat(false, answer)
-        return answer
+        store.addChat(false, answer, retryText = if (failed) userText else null)
+        return ChatResult(answer, failed)
     }
 
     /** בלי בינה מלאכותית – מבינים רק "הוסף הכל" ו"הוסף 1,3". */

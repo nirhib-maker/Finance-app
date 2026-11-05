@@ -56,11 +56,15 @@
 | ספק | איפה מקבלים מפתח | מודל ברירת מחדל |
 |---|---|---|
 | Claude (Anthropic) | [console.anthropic.com](https://console.anthropic.com) → API Keys | `claude-opus-5-5` |
-| Gemini (Google) | [aistudio.google.com](https://aistudio.google.com) → Get API key | `gemini-3.6-flash` |
+| Gemini (Google) | [aistudio.google.com](https://aistudio.google.com) → Get API key | `gemini-3.1-flash-lite` |
 
 באפליקציה: **הגדרות** → מפעילים "להשתמש בבינה מלאכותית" → בוחרים ספק → מדביקים מפתח → "בדוק חיבור".
 לכל ספק נשמרים מפתח ומודל משלו, כך שאפשר לעבור ביניהם בלחיצה. את שם המודל אפשר לשנות
 (למשל `claude-haiku-5-5` הזול יותר, או מודל Gemini אחר מהרשימה של Google).
+
+עם Gemini, כשהמודל עמוס (שגיאה 429/503) האפליקציה מנסה שוב פעמיים ואז עוברת אוטומטית
+לפי הסדר: `gemini-3.1-flash-lite` → `gemini-2.5-flash-lite` → `gemini-3.6-flash`. אם הכול נכשל – בצ'אט
+הטקסט חוזר לשורת הכתיבה ויש כפתור "🔁 שלח שוב" (גם בהתראה).
 
 איך זה עובד: הודעות נאספות ונשלחות יחד כ-3 דקות אחרי ההודעה האחרונה (כדי לחסוך בקשות).
 עם Claude, אם המודל מסרב לבקשה היא עוברת אוטומטית למודל חלופי (server-side fallback).

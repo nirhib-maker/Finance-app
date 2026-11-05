@@ -11,7 +11,7 @@ interface LlmClient {
 
 enum class LlmProvider(val label: String, val defaultModel: String, val keyHint: String, val keyUrl: String) {
     CLAUDE("Claude (Anthropic)", "claude-opus-5-5", "sk-ant-…", "console.anthropic.com"),
-    GEMINI("Gemini (Google)", "gemini-3.6-flash", "AIza…", "aistudio.google.com");
+    GEMINI("Gemini (Google)", "gemini-3.1-flash-lite", "AIza…", "aistudio.google.com");
 
     fun client(apiKey: String, model: String): LlmClient = when (this) {
         CLAUDE -> ClaudeClient(apiKey, model)

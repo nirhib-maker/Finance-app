@@ -43,7 +43,8 @@ data class StoredItem(
 
 data class StoredSummary(val time: Long, val text: String)
 
-data class ChatEntry(val fromUser: Boolean, val text: String, val time: Long)
+/** retryText: אם זו הודעת שגיאה – הטקסט של ההורה שלא נשלח, כדי שאפשר יהיה לשלוח שוב. */
+data class ChatEntry(val fromUser: Boolean, val text: String, val time: Long, val retryText: String? = null)
 
 /**
  * אחסון מקומי פשוט בקובץ JSON. רק הודעות מקבוצות שסומנו נשמרות; מקבוצות אחרות נשמר רק השם
@@ -170,13 +171,16 @@ class Store private constructor(private val file: File) {
     // ---------- שיחה עם העוזר ----------
 
     @Synchronized
-    fun addChat(fromUser: Boolean, text: String) {
-        chat.add(ChatEntry(fromUser, text, System.currentTimeMillis()))
+    fun addChat(fromUser: Boolean, text: String, retryText: String? = null) {
+        chat.add(ChatEntry(fromUser, text, System.currentTimeMillis(), retryText))
         while (chat.size > 80) chat.removeAt(0)
         save()
     }
 
     @Synchronized fun chat(): List<ChatEntry> = chat.toList()
+
+    /** הטקסט של ההודעה האחרונה שנכשלה (אם ההודעה האחרונה בשיחה היא שגיאה). */
+    @Synchronized fun lastFailedText(): String? = chat.lastOrNull()?.retryText
 
     // ---------- שמירה וטעינה ----------
 
@@ -218,7 +222,10 @@ class Store private constructor(private val file: File) {
             summaries.forEach { put(JSONObject().put("time", it.time).put("text", it.text)) }
         })
         root.put("chat", JSONArray().apply {
-            chat.forEach { put(JSONObject().put("user", it.fromUser).put("text", it.text).put("time", it.time)) }
+            chat.forEach {
+                put(JSONObject().put("user", it.fromUser).put("text", it.text).put("time", it.time)
+                    .put("retry", it.retryText ?: ""))
+            }
         })
         root.put("nextNum", nextNum)
         val tmp = File(file.parentFile, file.name + ".tmp")
@@ -258,7 +265,8 @@ class Store private constructor(private val file: File) {
         root.optJSONArray("chat")?.let { a ->
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)
-                chat.add(ChatEntry(o.getBoolean("user"), o.getString("text"), o.getLong("time")))
+                chat.add(ChatEntry(o.getBoolean("user"), o.getString("text"), o.getLong("time"),
+                    o.optString("retry").ifEmpty { null }))
             }
         }
         nextNum = maxOf(root.optInt("nextNum", 1), (items.maxOfOrNull { it.num } ?: 0) + 1)
