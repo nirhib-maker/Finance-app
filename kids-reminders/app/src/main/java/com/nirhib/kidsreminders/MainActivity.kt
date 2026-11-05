@@ -34,7 +34,11 @@ import java.time.format.DateTimeFormatter
 /** מסך יחיד עם שלוש לשוניות: סיכום, קבוצות, הגדרות. */
 class MainActivity : Activity() {
 
-    private enum class Tab(val label: String) { SUMMARY("סיכום"), GROUPS("קבוצות"), SETTINGS("הגדרות") }
+    private enum class Tab(val label: String) { SUMMARY("סיכום"), CHAT("עוזר"), GROUPS("קבוצות"), SETTINGS("הגדרות") }
+
+    companion object {
+        const val EXTRA_TAB = "tab"
+    }
 
     private var tab = Tab.SUMMARY
     private lateinit var content: LinearLayout
@@ -97,7 +101,16 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        intent?.getStringExtra(EXTRA_TAB)?.let { name ->
+            Tab.entries.firstOrNull { it.name == name }?.let { tab = it }
+            intent.removeExtra(EXTRA_TAB)
+        }
         render()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 
     private fun render() {
@@ -116,6 +129,7 @@ class MainActivity : Activity() {
         content.removeAllViews()
         when (tab) {
             Tab.SUMMARY -> renderSummary()
+            Tab.CHAT -> renderChat()
             Tab.GROUPS -> renderGroups()
             Tab.SETTINGS -> renderSettings()
         }
@@ -139,6 +153,16 @@ class MainActivity : Activity() {
         val items = store.activeItems(today)
         content.addView(header("📅 מה מתקרב"))
         if (items.isEmpty()) content.addView(text("אין כרגע פריטים. כשתגיע הודעה חשובה מהקבוצות היא תופיע כאן.", 14f, dim = true))
+        val pendingCount = items.count { it.status == ItemStatus.PENDING && it.item.date != null }
+        if (pendingCount > 0) {
+            content.addView(smallButton("✓ הוסף ליומן את כל $pendingCount הממתינים") {
+                if (!CalendarHelper.hasPermission(this)) { requestCalendar(); return@smallButton }
+                background {
+                    val n = Actions.addAllPending(this)
+                    runOnUiThread { toast("נוספו $n"); render() }
+                }
+            })
+        }
 
         items.groupBy { it.item.date }.forEach { (date, list) ->
             val label = date?.let { d ->
@@ -172,10 +196,10 @@ class MainActivity : Activity() {
 
     private fun itemCard(s: StoredItem): View = card().apply {
         val i = s.item
-        addView(text(i.calendarTitle(), 16f, bold = true))
+        addView(text("#${s.num}  " + i.calendarTitle(), 16f, bold = true))
         val status = when (s.status) {
             ItemStatus.ADDED -> "✓ ביומן"
-            else -> if (i.date == null) "לא ביומן (אין תאריך)" else "לא ביומן"
+            else -> if (i.date == null) "ללא תאריך" else "⏳ מחכה לאישור"
         }
         addView(text(Notifier.whenText(s) + " · " + status, 13f, dim = true))
         if (i.details.isNotBlank() && i.details != i.title) addView(text(i.details.take(300), 13f))
@@ -231,6 +255,63 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("ביטול", null)
             .show()
+    }
+
+    // ------------------------------------------------------------------ עוזר (צ'אט)
+
+    private var chatBusy = false
+
+    private fun renderChat() {
+        if (!settings.useAi) {
+            content.addView(card(0x33E8618C).apply {
+                addView(text("כדי לדבר עם העוזר בשפה חופשית צריך להפעיל בינה מלאכותית (Claude או Gemini) בהגדרות. " +
+                    "בינתיים אפשר לכתוב \"הוסף הכל\" או \"הוסף 1,3\".", 14f))
+                addView(smallButton("להגדרות") { tab = Tab.SETTINGS; render() })
+            })
+        }
+        content.addView(text(
+            "אפשר לכתוב למשל: \"תוסיף את 1 ו-3\", \"בלי הטיול\", \"תזיז את האסיפה ל-19:00\", " +
+                "\"מה לני צריכה מחר?\", \"תזכיר לי שרומי צריכה 20 ש״ח ביום ראשון\".",
+            13f, dim = true,
+        ).apply { setPadding(0, dp(8), 0, dp(8)) })
+
+        val turns = store.chat().takeLast(40)
+        if (turns.isEmpty()) content.addView(text("עוד אין שיחה. הודעת הערב תופיע כאן, ואפשר גם לכתוב עכשיו.", 14f, dim = true))
+        turns.forEach { t ->
+            val bubble = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(if (t.fromUser) 0x335B4BC4 else 0x14808080)
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                addView(text(t.text, 15f))
+                addView(text(formatTime(t.time), 11f, dim = true))
+            }
+            val wrap = LinearLayout(this).apply {
+                gravity = if (t.fromUser) Gravity.START else Gravity.END
+                setPadding(if (t.fromUser) 0 else dp(32), dp(4), if (t.fromUser) dp(32) else 0, dp(4))
+                addView(bubble, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            }
+            content.addView(wrap, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        if (chatBusy) content.addView(text("⏳ חושב…", 14f, dim = true).apply { setPadding(0, dp(6), 0, dp(6)) })
+
+        val input = EditText(this).apply {
+            hint = "כתוב לעוזר…"
+            minLines = 2
+            isEnabled = !chatBusy
+        }
+        content.addView(input)
+        content.addView(smallButton("שלח") {
+            val text = input.text.toString().trim()
+            if (text.isEmpty() || chatBusy) return@smallButton
+            chatBusy = true
+            store.addChat(true, text) // מוצג מיד, עוד לפני שהעוזר עונה
+            render()
+            background {
+                Actions.chat(this, text, alreadyRecorded = true)
+                runOnUiThread { chatBusy = false; render() }
+            }
+        })
+        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     }
 
     // ------------------------------------------------------------------ קבוצות
@@ -307,7 +388,10 @@ class MainActivity : Activity() {
         if (CalendarHelper.hasPermission(this)) CalendarHelper.ensureCalendar(this, settings)
         content.addView(text("יומן: " + settings.calendarName.ifEmpty { "לא נבחר" }, 14f))
         content.addView(smallButton("בחר יומן") { chooseCalendar() })
-        content.addView(switch("להוסיף ליומן אוטומטית (אפשר לבטל מההתראה)", settings.autoAddToCalendar) {
+        content.addView(switch("התראה מיידית על כל פריט חדש (אחרת – רק סיכום ערב)", settings.notifyEachItem) {
+            settings.notifyEachItem = it
+        })
+        content.addView(switch("להוסיף ליומן בלי לשאול", settings.autoAddToCalendar) {
             settings.autoAddToCalendar = it
         })
         content.addView(text("סיכום ערב יומי בשעה ${settings.digestHour}:00", 14f).apply { setPadding(0, dp(12), 0, 0) })

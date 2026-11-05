@@ -158,9 +158,10 @@ class ClaudeExtractorParsingTest {
     }
 }
 
-class GeminiExtractorTest {
+class GeminiClientTest {
     private val kids = listOf("מילי", "רומי", "לני")
     private val input = listOf(KidMessage("מילי", msg("מחר להביא תחפושת")))
+    private fun base(server: MockWebServer) = server.url("/v1beta").toString().trimEnd('/')
 
     @Test fun sendsRequestAndParsesAnswer() {
         val server = MockWebServer()
@@ -177,8 +178,7 @@ class GeminiExtractorTest {
         server.enqueue(MockResponse().setBody(com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload)))
         server.start()
         try {
-            val r = GeminiExtractor("test-key", "gemini-x", baseUrl = server.url("/v1beta").toString().trimEnd('/'))
-                .extract(input, kids, TODAY)
+            val r = ItemExtractor(GeminiClient("test-key", "gemini-x", baseUrl = base(server))).extract(input, kids, TODAY)
             assertEquals(ItemType.BRING, r.items.single().type)
             assertEquals(LocalDate.of(2026, 11, 6), r.items.single().date)
             assertEquals("מילי: תחפושת מחר", r.summary)
@@ -188,7 +188,8 @@ class GeminiExtractorTest {
             assertEquals("test-key", req.getHeader("x-goog-api-key"))
             val body = req.body.readUtf8()
             assertTrue(body.contains("\"responseMimeType\":\"application/json\""))
-            assertTrue(body.contains("\"responseSchema\""))
+            assertTrue(body.contains("\"type\":\"OBJECT\""))
+            assertTrue(!body.contains("additionalProperties"))
             assertTrue(body.contains("systemInstruction"))
         } finally {
             server.shutdown()
@@ -201,7 +202,7 @@ class GeminiExtractorTest {
         server.start()
         try {
             val e = assertFailsWith<java.io.IOException> {
-                GeminiExtractor("bad", baseUrl = server.url("/v1beta").toString().trimEnd('/')).extract(input, kids, TODAY)
+                ItemExtractor(GeminiClient("bad", baseUrl = base(server))).extract(input, kids, TODAY)
             }
             assertTrue(e.message!!.contains("API key not valid"))
         } finally {
@@ -211,7 +212,75 @@ class GeminiExtractorTest {
 
     @Test fun blockedPrompt() {
         assertFailsWith<IllegalStateException> {
-            GeminiExtractor.extractText("""{"promptFeedback":{"blockReason":"SAFETY"}}""")
+            GeminiClient.extractText("""{"promptFeedback":{"blockReason":"SAFETY"}}""")
         }
+    }
+
+    @Test fun schemaConversion() {
+        val g = GeminiClient.toGeminiSchema(AssistantPrompt.CHAT_SCHEMA)
+        assertEquals("OBJECT", g["type"])
+        assertEquals(listOf("reply", "actions"), g["propertyOrdering"])
+        assertTrue(!g.containsKey("additionalProperties"))
+        @Suppress("UNCHECKED_CAST")
+        val item = ((g["properties"] as Map<String, Any>)["actions"] as Map<String, Any>)["items"] as Map<String, Any>
+        assertEquals("OBJECT", item["type"])
+        @Suppress("UNCHECKED_CAST")
+        assertEquals("INTEGER", ((item["properties"] as Map<String, Map<String, Any>>)["num"])!!["type"])
+    }
+}
+
+/** לקוח מזויף: מחזיר תשובה קבועה ושומר את מה שנשלח. */
+private class FakeClient(private val answer: String) : LlmClient {
+    var system = ""; var user = ""
+    override fun json(system: String, user: String, schema: Map<String, Any>): String {
+        this.system = system; this.user = user; return answer
+    }
+}
+
+class AssistantTest {
+    private val kids = listOf("מילי", "רומי", "לני")
+    private val items = listOf(
+        AssistantItem(1, ExtractedItem("מילי", ItemType.BRING, "להביא תחפושת", TODAY.plusDays(1), null, "יום תחפושות"), ItemState.PENDING),
+        AssistantItem(2, ExtractedItem("רומי", ItemType.EXAM, "מבחן בחשבון", LocalDate.of(2026, 11, 10), null, ""), ItemState.IN_CALENDAR),
+    )
+
+    @Test fun respondBuildsPromptAndParsesActions() {
+        val fake = FakeClient("""
+            {"reply":"מוסיף את התחפושת ומזיז את המבחן","actions":[
+              {"op":"ADD","num":1,"kid":"","type":"","title":"","date":"","time":"","details":""},
+              {"op":"UPDATE","num":2,"kid":"","type":"","title":"","date":"2026-11-11","time":"","details":""},
+              {"op":"CREATE_AND_ADD","num":0,"kid":"לני","type":"PAYMENT","title":"20 ש\"ח לטיול","date":"2026-11-08","time":"","details":""},
+              {"op":"NONSENSE","num":3,"kid":"","type":"","title":"","date":"","time":"","details":""}
+            ]}
+        """.trimIndent())
+        val history = listOf(ChatTurn(false, "מחכים לאישור: #1 ...", NOW.minusMinutes(5)))
+        val r = Assistant(fake).respond("תוסיף את 1, המבחן זז ליום ג'... רגע, לרביעי. ולני צריכה 20 שקל ביום ראשון", items, history, listOf("רומי: מבחן"), kids, NOW)
+
+        assertTrue(fake.user.contains("#1 | מילי | BRING | 2026-11-06 Fri | - | PENDING | להביא תחפושת"))
+        assertTrue(fake.user.contains("#2 | רומי | EXAM | 2026-11-10 Tue | - | IN_CALENDAR"))
+        assertTrue(fake.user.contains("assistant: מחכים לאישור"))
+        assertTrue(fake.user.trimEnd().endsWith("ולני צריכה 20 שקל ביום ראשון"))
+
+        assertEquals("מוסיף את התחפושת ומזיז את המבחן", r.reply)
+        assertEquals(listOf(AssistantOp.ADD, AssistantOp.UPDATE, AssistantOp.CREATE_AND_ADD), r.actions.map { it.op })
+        assertNull(r.actions[0].title)
+        assertEquals(LocalDate.of(2026, 11, 11), r.actions[1].date)
+        assertNull(r.actions[1].time)
+        assertEquals("לני", r.actions[2].kid)
+        assertEquals(ItemType.PAYMENT, r.actions[2].type)
+    }
+
+    @Test fun eveningDigest() {
+        val fake = FakeClient("""{"text":"מחר: מילי – תחפושת"}""")
+        assertEquals("מחר: מילי – תחפושת", Assistant(fake).eveningDigest(items, emptyList(), kids, NOW))
+        assertTrue(fake.system.contains("20:00"))
+    }
+
+    @Test fun templateDigest() {
+        val t = assertNotNull(AssistantPrompt.templateDigest(items, TODAY))
+        assertTrue(t.contains("מחר (יום שישי):"))
+        assertTrue(t.contains("#1 מילי – להביא תחפושת (מחר)"))
+        assertTrue(!t.contains("#2"))
+        assertNull(AssistantPrompt.templateDigest(emptyList(), TODAY))
     }
 }

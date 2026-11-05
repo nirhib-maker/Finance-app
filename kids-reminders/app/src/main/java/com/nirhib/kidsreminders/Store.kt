@@ -32,7 +32,9 @@ enum class ItemStatus { PENDING, ADDED, DISMISSED }
 
 data class StoredItem(
     val id: String,
-    val item: ExtractedItem,
+    /** מספר קצר וקבוע (#3) שאפשר להתייחס אליו בצ'אט. */
+    val num: Int,
+    var item: ExtractedItem,
     var status: ItemStatus,
     var eventId: Long,
     val createdAt: Long,
@@ -40,6 +42,8 @@ data class StoredItem(
 )
 
 data class StoredSummary(val time: Long, val text: String)
+
+data class ChatEntry(val fromUser: Boolean, val text: String, val time: Long)
 
 /**
  * אחסון מקומי פשוט בקובץ JSON. רק הודעות מקבוצות שסומנו נשמרות; מקבוצות אחרות נשמר רק השם
@@ -62,6 +66,8 @@ class Store private constructor(private val file: File) {
     private val seenGroups = linkedMapOf<String, Long>()
     private val seenKeys = LinkedHashSet<String>()
     private val summaries = mutableListOf<StoredSummary>()
+    private val chat = mutableListOf<ChatEntry>()
+    private var nextNum = 1
 
     init {
         load()
@@ -115,13 +121,15 @@ class Store private constructor(private val file: File) {
                 it.item.kid == item.kid && it.item.type == item.type && it.item.date == item.date &&
                     similar(it.item.title, item.title)
             }) return null
-        val s = StoredItem(UUID.randomUUID().toString(), item, ItemStatus.PENDING, -1, System.currentTimeMillis(), source)
+        val s = StoredItem(UUID.randomUUID().toString(), nextNum++, item, ItemStatus.PENDING, -1, System.currentTimeMillis(), source)
         items.add(s)
         save()
         return s
     }
 
     @Synchronized fun item(id: String): StoredItem? = items.firstOrNull { it.id == id }
+
+    @Synchronized fun itemByNum(num: Int): StoredItem? = items.firstOrNull { it.num == num }
 
     @Synchronized
     fun update(id: String, block: (StoredItem) -> Unit) {
@@ -156,6 +164,20 @@ class Store private constructor(private val file: File) {
 
     @Synchronized fun summaries(): List<StoredSummary> = summaries.sortedByDescending { it.time }
 
+    @Synchronized fun summariesSince(ms: Long): List<String> =
+        summaries.filter { it.time >= ms }.sortedBy { it.time }.map { it.text }
+
+    // ---------- שיחה עם העוזר ----------
+
+    @Synchronized
+    fun addChat(fromUser: Boolean, text: String) {
+        chat.add(ChatEntry(fromUser, text, System.currentTimeMillis()))
+        while (chat.size > 80) chat.removeAt(0)
+        save()
+    }
+
+    @Synchronized fun chat(): List<ChatEntry> = chat.toList()
+
     // ---------- שמירה וטעינה ----------
 
     private fun similar(a: String, b: String): Boolean {
@@ -184,7 +206,7 @@ class Store private constructor(private val file: File) {
         root.put("items", JSONArray().apply {
             items.forEach {
                 val i = it.item
-                put(JSONObject().put("id", it.id).put("kid", i.kid).put("type", i.type.name).put("title", i.title)
+                put(JSONObject().put("id", it.id).put("num", it.num).put("kid", i.kid).put("type", i.type.name).put("title", i.title)
                     .put("date", i.date?.toString() ?: "").put("time", i.time?.toString() ?: "")
                     .put("details", i.details).put("status", it.status.name).put("eventId", it.eventId)
                     .put("createdAt", it.createdAt).put("source", it.source))
@@ -195,6 +217,10 @@ class Store private constructor(private val file: File) {
         root.put("summaries", JSONArray().apply {
             summaries.forEach { put(JSONObject().put("time", it.time).put("text", it.text)) }
         })
+        root.put("chat", JSONArray().apply {
+            chat.forEach { put(JSONObject().put("user", it.fromUser).put("text", it.text).put("time", it.time)) }
+        })
+        root.put("nextNum", nextNum)
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.writeText(root.toString())
         tmp.renameTo(file)
@@ -221,13 +247,21 @@ class Store private constructor(private val file: File) {
                     time = o.optString("time").takeIf { it.isNotEmpty() }?.let { LocalTime.parse(it) },
                     details = o.optString("details"),
                 )
-                items.add(StoredItem(o.getString("id"), item,
+                val num = o.optInt("num", 0).takeIf { it > 0 } ?: (items.maxOfOrNull { it.num } ?: 0) + 1
+                items.add(StoredItem(o.getString("id"), num, item,
                     runCatching { ItemStatus.valueOf(o.optString("status")) }.getOrDefault(ItemStatus.PENDING),
                     o.optLong("eventId", -1), o.optLong("createdAt"), o.optString("source")))
             }
         }
         root.optJSONObject("groups")?.let { g -> g.keys().forEach { seenGroups[it] = g.getLong(it) } }
         root.optJSONArray("keys")?.let { a -> for (i in 0 until a.length()) seenKeys.add(a.getString(i)) }
+        root.optJSONArray("chat")?.let { a ->
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                chat.add(ChatEntry(o.getBoolean("user"), o.getString("text"), o.getLong("time")))
+            }
+        }
+        nextNum = maxOf(root.optInt("nextNum", 1), (items.maxOfOrNull { it.num } ?: 0) + 1)
         root.optJSONArray("summaries")?.let { a ->
             for (i in 0 until a.length()) {
                 val o = a.getJSONObject(i)

@@ -7,19 +7,18 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
-import java.time.LocalDate
 import java.util.concurrent.TimeUnit
 
 /**
- * חילוץ וסיכום בעזרת Gemini (Google AI Studio API key).
- * עובד מול ה-REST API ‏generateContent עם פלט JSON מובנה (responseSchema).
+ * Gemini (מפתח מ-Google AI Studio) דרך ה-REST API ‏generateContent,
+ * עם פלט JSON מובנה (responseSchema).
  */
-class GeminiExtractor(
+class GeminiClient(
     private val apiKey: String,
     private val model: String = LlmProvider.GEMINI.defaultModel,
     private val http: OkHttpClient = defaultClient,
     private val baseUrl: String = "https://generativelanguage.googleapis.com/v1beta",
-) : LlmExtractor {
+) : LlmClient {
 
     companion object {
         private val mapper = ObjectMapper()
@@ -29,41 +28,37 @@ class GeminiExtractor(
             .readTimeout(120, TimeUnit.SECONDS)
             .build()
 
-        /** סכמה בפורמט של Gemini (תת-קבוצה של OpenAPI: טיפוסים באותיות גדולות). */
-        private val SCHEMA: Map<String, Any> = mapOf(
-            "type" to "OBJECT",
-            "required" to listOf("summary", "items"),
-            "propertyOrdering" to listOf("summary", "items"),
-            "properties" to mapOf(
-                "summary" to mapOf("type" to "STRING"),
-                "items" to mapOf(
-                    "type" to "ARRAY",
-                    "items" to mapOf(
-                        "type" to "OBJECT",
-                        "required" to ExtractionPrompt.ITEM_FIELDS,
-                        "propertyOrdering" to ExtractionPrompt.ITEM_FIELDS,
-                        "properties" to ExtractionPrompt.ITEM_FIELDS.associateWith { f ->
-                            if (f == "type") mapOf("type" to "STRING", "enum" to ExtractionPrompt.TYPE_VALUES)
-                            else mapOf("type" to "STRING")
-                        },
-                    ),
-                ),
-            ),
-        )
+        /**
+         * ממיר JSON Schema רגיל לפורמט של Gemini: טיפוסים באותיות גדולות, בלי additionalProperties,
+         * ועם propertyOrdering כדי שהשדות ייצאו בסדר שהגדרנו.
+         */
+        @Suppress("UNCHECKED_CAST")
+        fun toGeminiSchema(schema: Map<String, Any>): Map<String, Any> {
+            val out = linkedMapOf<String, Any>()
+            for ((k, v) in schema) {
+                when (k) {
+                    "additionalProperties" -> Unit
+                    "type" -> out[k] = (v as String).uppercase()
+                    "items" -> out[k] = toGeminiSchema(v as Map<String, Any>)
+                    "properties" -> {
+                        val props = v as Map<String, Map<String, Any>>
+                        out[k] = props.mapValues { toGeminiSchema(it.value) }
+                        out["propertyOrdering"] = props.keys.toList()
+                    }
+                    else -> out[k] = v
+                }
+            }
+            return out
+        }
 
-        fun buildRequestBody(messages: List<KidMessage>, kids: List<String>, today: LocalDate): String =
+        fun buildRequestBody(system: String, user: String, schema: Map<String, Any>): String =
             mapper.writeValueAsString(
                 mapOf(
-                    "systemInstruction" to mapOf("parts" to listOf(mapOf("text" to ExtractionPrompt.SYSTEM_PROMPT))),
-                    "contents" to listOf(
-                        mapOf(
-                            "role" to "user",
-                            "parts" to listOf(mapOf("text" to ExtractionPrompt.buildUserPrompt(messages, kids, today))),
-                        )
-                    ),
+                    "systemInstruction" to mapOf("parts" to listOf(mapOf("text" to system))),
+                    "contents" to listOf(mapOf("role" to "user", "parts" to listOf(mapOf("text" to user)))),
                     "generationConfig" to mapOf(
                         "responseMimeType" to "application/json",
-                        "responseSchema" to SCHEMA,
+                        "responseSchema" to toGeminiSchema(schema),
                     ),
                 )
             )
@@ -86,13 +81,11 @@ class GeminiExtractor(
         }
     }
 
-    override fun extract(messages: List<KidMessage>, kids: List<String>, today: LocalDate): ExtractionResult {
-        if (messages.isEmpty()) return ExtractionResult(emptyList())
-
+    override fun json(system: String, user: String, schema: Map<String, Any>): String {
         val request = Request.Builder()
             .url("$baseUrl/models/${model.trim()}:generateContent")
             .header("x-goog-api-key", apiKey)
-            .post(buildRequestBody(messages, kids, today).toRequestBody(JSON))
+            .post(buildRequestBody(system, user, schema).toRequestBody(JSON))
             .build()
 
         http.newCall(request).execute().use { resp ->
@@ -102,7 +95,7 @@ class GeminiExtractor(
                     .getOrNull().orEmpty().ifEmpty { body.take(200) }
                 throw IOException("Gemini HTTP ${resp.code}: $msg")
             }
-            return ExtractionPrompt.parseResponse(extractText(body), kids)
+            return extractText(body)
         }
     }
 }

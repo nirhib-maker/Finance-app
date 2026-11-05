@@ -11,8 +11,8 @@ android {
         applicationId = "com.nirhib.kidsreminders"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.3.0"
     }
 
     // חתימה קבועה (אופציונלי): אם מוגדרים משתני הסביבה – ה-APK נחתם תמיד באותו מפתח,

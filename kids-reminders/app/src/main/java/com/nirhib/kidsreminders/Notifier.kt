@@ -72,17 +72,57 @@ object Notifier {
         context.getSystemService(NotificationManager::class.java).notify(s.id.hashCode(), b.build())
     }
 
-    fun notifyDigest(context: Context, title: String, text: String) {
+    const val ASSISTANT_ID = 1
+    const val KEY_REPLY = "reply"
+
+    private fun openChat(context: Context): PendingIntent =
+        PendingIntent.getActivity(context, 1,
+            Intent(context, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_TAB, "CHAT")
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+    /** הודעת הערב / תשובת העוזר – תמיד באותה התראה, עם כפתור "השב" שאפשר לכתוב בו. */
+    fun notifyAssistant(context: Context, title: String, text: String, showAddAll: Boolean) {
         if (!canPost(context)) return
-        val n = Notification.Builder(context, CH_DIGEST)
+        val replyIntent = Intent(context, ActionReceiver::class.java).setAction(ActionReceiver.REPLY)
+        val mutable = if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+        val replyPi = PendingIntent.getBroadcast(context, 10, replyIntent, mutable or PendingIntent.FLAG_UPDATE_CURRENT)
+        val remoteInput = android.app.RemoteInput.Builder(KEY_REPLY)
+            .setLabel("למשל: הוסף 1 ו-3, בלי הטיול")
+            .build()
+        val reply = Notification.Action.Builder(null as android.graphics.drawable.Icon?, "השב", replyPi)
+            .addRemoteInput(remoteInput)
+            .build()
+
+        val b = Notification.Builder(context, CH_DIGEST)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
-            .setContentText(text.lineSequence().firstOrNull { it.startsWith("•") } ?: text)
+            .setContentText(text.lineSequence().firstOrNull { it.isNotBlank() } ?: text)
             .setStyle(Notification.BigTextStyle().bigText(text))
-            .setContentIntent(openApp(context))
-            .setAutoCancel(true)
+            .setContentIntent(openChat(context))
+            .setOnlyAlertOnce(false)
+            .addAction(reply)
+        if (showAddAll) {
+            val addAll = PendingIntent.getBroadcast(context, 11,
+                Intent(context, ActionReceiver::class.java).setAction(ActionReceiver.ADD_ALL),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            b.addAction(Notification.Action.Builder(null as android.graphics.drawable.Icon?, "הוסף הכל", addAll).build())
+        }
+        context.getSystemService(NotificationManager::class.java).notify(ASSISTANT_ID, b.build())
+    }
+
+    /** מעדכן את ההתראה מיד אחרי שליחת תשובה (כדי שהמסך לא ייתקע על "שולח…"). */
+    fun notifyWorking(context: Context, userText: String) {
+        if (!canPost(context)) return
+        val n = Notification.Builder(context, CH_INFO)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("⏳ מטפל בזה…")
+            .setContentText(userText)
+            .setContentIntent(openChat(context))
+            .setOnlyAlertOnce(true)
             .build()
-        context.getSystemService(NotificationManager::class.java).notify(1, n)
+        context.getSystemService(NotificationManager::class.java).notify(ASSISTANT_ID, n)
     }
 
     fun cancel(context: Context, itemId: String) =
@@ -95,18 +135,41 @@ class ActionReceiver : BroadcastReceiver() {
         const val ADD = "com.nirhib.kidsreminders.ADD"
         const val UNDO = "com.nirhib.kidsreminders.UNDO"
         const val DISMISS = "com.nirhib.kidsreminders.DISMISS"
+        const val REPLY = "com.nirhib.kidsreminders.REPLY"
+        const val ADD_ALL = "com.nirhib.kidsreminders.ADD_ALL"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        val id = intent.getStringExtra("id") ?: return
+        when (intent.action) {
+            REPLY -> {
+                val text = android.app.RemoteInput.getResultsFromIntent(intent)
+                    ?.getCharSequence(Notifier.KEY_REPLY)?.toString()?.trim()
+                if (!text.isNullOrEmpty()) {
+                    Notifier.notifyWorking(context, text)
+                    Work.chatFromNotification(context, text)
+                }
+                return
+            }
+        }
         val pending = goAsync()
         Thread {
             try {
                 when (intent.action) {
-                    ADD -> Actions.addToCalendar(context, id)
-                    UNDO, DISMISS -> Actions.dismiss(context, id)
+                    ADD_ALL -> {
+                        val n = Actions.addAllPending(context)
+                        val msg = "✓ נוספו ליומן $n פריטים."
+                        Store.get(context).addChat(false, msg)
+                        Notifier.notifyAssistant(context, "🤖 עוזר", msg, showAddAll = false)
+                    }
+                    else -> {
+                        val id = intent.getStringExtra("id") ?: return@Thread
+                        when (intent.action) {
+                            ADD -> Actions.addToCalendar(context, id)
+                            UNDO, DISMISS -> Actions.dismiss(context, id)
+                        }
+                        Notifier.cancel(context, id)
+                    }
                 }
-                Notifier.cancel(context, id)
             } finally {
                 pending.finish()
             }

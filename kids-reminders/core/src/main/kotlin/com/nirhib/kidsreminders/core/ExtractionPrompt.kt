@@ -17,17 +17,16 @@ interface LlmExtractor {
     fun extract(messages: List<KidMessage>, kids: List<String>, today: LocalDate): ExtractionResult
 }
 
-enum class LlmProvider(val label: String, val defaultModel: String, val keyHint: String, val keyUrl: String) {
-    CLAUDE("Claude (Anthropic)", "claude-opus-5-5", "sk-ant-…", "console.anthropic.com"),
-    GEMINI("Gemini (Google)", "gemini-3.6-flash", "AIza…", "aistudio.google.com");
-
-    fun create(apiKey: String, model: String): LlmExtractor = when (this) {
-        CLAUDE -> ClaudeExtractor(apiKey, model)
-        GEMINI -> GeminiExtractor(apiKey, model)
-    }
-
-    companion object {
-        fun parse(v: String?): LlmProvider = entries.firstOrNull { it.name == v } ?: CLAUDE
+/** חילוץ פריטים ממקבץ הודעות בעזרת מודל שפה (Claude / Gemini). */
+class ItemExtractor(private val client: LlmClient) : LlmExtractor {
+    override fun extract(messages: List<KidMessage>, kids: List<String>, today: LocalDate): ExtractionResult {
+        if (messages.isEmpty()) return ExtractionResult(emptyList())
+        val json = client.json(
+            ExtractionPrompt.SYSTEM_PROMPT,
+            ExtractionPrompt.buildUserPrompt(messages, kids, today),
+            ExtractionPrompt.SCHEMA,
+        )
+        return ExtractionPrompt.parseResponse(json, kids)
     }
 }
 
@@ -63,8 +62,21 @@ object ExtractionPrompt {
           Empty string if nothing important.
     """.trimIndent()
 
-    val ITEM_FIELDS = listOf("kid", "type", "title", "date", "time", "details")
     val TYPE_VALUES = ItemType.entries.map { it.name }
+
+    val SCHEMA: Map<String, Any> = Schema.obj(
+        "summary" to Schema.str(),
+        "items" to Schema.array(
+            Schema.obj(
+                "kid" to Schema.str(),
+                "type" to Schema.enum(TYPE_VALUES),
+                "title" to Schema.str(),
+                "date" to Schema.str(),
+                "time" to Schema.str(),
+                "details" to Schema.str(),
+            )
+        ),
+    )
 
     private val stampFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 

@@ -1,7 +1,6 @@
 package com.nirhib.kidsreminders
 
 import android.content.Context
-import android.util.Log
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -11,12 +10,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.nirhib.kidsreminders.core.DigestBuilder
-import com.nirhib.kidsreminders.core.KidMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Duration
-import java.time.LocalDate
 import java.time.LocalDateTime
 import java.util.concurrent.TimeUnit
 
@@ -49,56 +45,49 @@ object Work {
         )
     }
 
+    fun chatFromNotification(context: Context, text: String) {
+        val req = OneTimeWorkRequestBuilder<ChatWorker>()
+            .setInputData(androidx.work.workDataOf("text" to text))
+            .build()
+        WorkManager.getInstance(context).enqueue(req)
+    }
+
     fun runDigestNow(context: Context) {
         WorkManager.getInstance(context).enqueue(OneTimeWorkRequestBuilder<DigestWorker>().build())
     }
 }
 
-/** שולח את ההודעות שעוד לא נותחו למודל השפה (Claude / Gemini). אם נכשל – נופל חזרה לחוקים המקומיים. */
+/** מנתח ברקע את ההודעות שהצטברו (בלי להקפיץ התראות). אם הבינה המלאכותית נכשלת – מנסה שוב, ואז נופל לחוקים. */
 class AiWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val ctx = applicationContext
-        val settings = Settings(ctx)
-        val store = Store.get(ctx)
-        val pending = store.unprocessedMessages()
-        if (pending.isEmpty()) return@withContext Result.success()
-
-        if (!settings.useAi) {
-            Actions.processWithRules(ctx, pending)
-            return@withContext Result.success()
-        }
-
-        try {
-            val extractor = settings.extractor()
-            val result = extractor.extract(
-                pending.map { KidMessage(it.kid, it.toIncoming()) },
-                settings.kids,
-                LocalDate.now(),
-            )
-            Actions.handleItems(ctx, result.items, "claude")
-            result.summary?.let { store.addSummary(it) }
-            store.markProcessed(pending.map { it.id })
-            Result.success()
-        } catch (e: Exception) {
-            Log.w("AiWorker", "${settings.provider} failed, attempt $runAttemptCount", e)
-            if (runAttemptCount < 2) {
-                Result.retry()
-            } else {
-                // לא מפספסים כלום: מנתחים עם החוקים המקומיים
-                Actions.processWithRules(ctx, pending)
-                Result.success()
-            }
-        }
+        val lastAttempt = runAttemptCount >= 2
+        if (Actions.processPending(applicationContext, allowRulesFallback = lastAttempt)) Result.success()
+        else Result.retry()
     }
 }
 
-/** סיכום ערב: מה צריך מחר ומה מתקרב השבוע. */
+/** הודעת הערב: סיכום היום + מה מחכה לאישור, עם אפשרות לענות ישירות מההתראה. */
 class DigestWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val ctx = applicationContext
-        val items = Store.get(ctx).activeItems().map { it.item }
-        val text = DigestBuilder.build(items, LocalDate.now())
-        if (text != null) Notifier.notifyDigest(ctx, "🌙 מה צריך מחר", text)
+        val text = Actions.eveningDigest(ctx)
+        if (text != null) {
+            Store.get(ctx).addChat(false, text)
+            val hasPending = Actions.assistantItems(ctx).any {
+                it.state == com.nirhib.kidsreminders.core.ItemState.PENDING && it.item.date != null
+            }
+            Notifier.notifyAssistant(ctx, "🌙 סיכום ערב", text, showAddAll = hasPending)
+        }
+        Result.success()
+    }
+}
+
+/** תשובה שנכתבה ישירות בהתראה: שולחים לעוזר ומציגים את התשובה באותה התראה. */
+class ChatWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val text = inputData.getString("text") ?: return@withContext Result.success()
+        val answer = Actions.chat(applicationContext, text)
+        Notifier.notifyAssistant(applicationContext, "🤖 עוזר", answer, showAddAll = false)
         Result.success()
     }
 }

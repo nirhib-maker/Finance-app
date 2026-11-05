@@ -1,6 +1,9 @@
 package com.nirhib.kidsreminders
 
 import android.content.Context
+import com.nirhib.kidsreminders.core.Assistant
+import com.nirhib.kidsreminders.core.ItemExtractor
+import com.nirhib.kidsreminders.core.LlmClient
 import com.nirhib.kidsreminders.core.LlmExtractor
 import com.nirhib.kidsreminders.core.LlmProvider
 import org.json.JSONObject
@@ -34,10 +37,15 @@ class Settings(context: Context) {
         get() = prefs.getString("calendarName", "") ?: ""
         set(v) = prefs.edit().putString("calendarName", v).apply()
 
-    /** להוסיף ליומן אוטומטית (עם אפשרות ביטול מההתראה), או לשאול קודם. */
+    /** להוסיף ליומן בלי לשאול. ברירת מחדל: לא – הכול מחכה לאישור בסיכום הערב. */
     var autoAddToCalendar: Boolean
-        get() = prefs.getBoolean("autoAdd", true)
-        set(v) = prefs.edit().putBoolean("autoAdd", v).apply()
+        get() = prefs.getBoolean("autoAddCal", false)
+        set(v) = prefs.edit().putBoolean("autoAddCal", v).apply()
+
+    /** התראה מיידית על כל פריט חדש. ברירת מחדל: לא – רק הודעת ערב אחת. */
+    var notifyEachItem: Boolean
+        get() = prefs.getBoolean("notifyEach", false)
+        set(v) = prefs.edit().putBoolean("notifyEach", v).apply()
 
     /** שעת סיכום הערב (0-23). */
     var digestHour: Int
@@ -67,7 +75,9 @@ class Settings(context: Context) {
     val apiKey: String get() = apiKeyFor(provider)
     val model: String get() = modelFor(provider)
 
-    fun extractor(): LlmExtractor = provider.create(apiKey, model)
+    fun client(): LlmClient = provider.client(apiKey, model)
+    fun extractor(): LlmExtractor = ItemExtractor(client())
+    fun assistant(): Assistant = Assistant(client())
 
     val useAi: Boolean get() = aiEnabled && apiKey.isNotBlank()
 }
