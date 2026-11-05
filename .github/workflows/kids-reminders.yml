@@ -1,0 +1,65 @@
+name: kids-reminders (Android)
+
+on:
+  push:
+    paths:
+      - "kids-reminders/**"
+      - ".github/workflows/kids-reminders.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.KIDS_KEYSTORE_BASE64 != '' }}
+    defaults:
+      run:
+        working-directory: kids-reminders
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # חתימה קבועה (אופציונלי) – ראו kids-reminders/README.md
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.KIDS_KEYSTORE_BASE64 }}
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/kids.jks"
+          echo "KIDS_KEYSTORE_FILE=$RUNNER_TEMP/kids.jks" >> "$GITHUB_ENV"
+
+      - name: Test & build APK
+        env:
+          KIDS_KEYSTORE_PASSWORD: ${{ secrets.KIDS_KEYSTORE_PASSWORD }}
+          KIDS_KEY_ALIAS: ${{ secrets.KIDS_KEY_ALIAS }}
+          KIDS_KEY_PASSWORD: ${{ secrets.KIDS_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :core:test :app:assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk kids-reminders.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kids-reminders-apk
+          path: kids-reminders/kids-reminders.apk
+
+      # קישור הורדה קבוע לטלפון: Releases -> kids-reminders-latest
+      - name: Publish to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kids-reminders-latest
+          name: תזכורות לבנות – גרסה אחרונה
+          prerelease: true
+          files: kids-reminders/kids-reminders.apk
+          body: |
+            APK אחרון שנבנה מהענף ${{ github.ref_name }} (commit ${{ github.sha }}).
+            להתקנה: להוריד את kids-reminders.apk בטלפון ולפתוח. הוראות מלאות ב-kids-reminders/README.md
