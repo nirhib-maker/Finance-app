@@ -21,7 +21,7 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import com.nirhib.kidsreminders.core.ClaudeExtractor
+import com.nirhib.kidsreminders.core.LlmProvider
 import com.nirhib.kidsreminders.core.Hebrew
 import com.nirhib.kidsreminders.core.IncomingMessage
 import com.nirhib.kidsreminders.core.KidMessage
@@ -150,7 +150,7 @@ class MainActivity : Activity() {
         }
 
         store.summaries().firstOrNull()?.let { s ->
-            content.addView(header("🤖 סיכום אחרון (Claude) · ${formatTime(s.time)}"))
+            content.addView(header("🤖 סיכום אחרון (בינה מלאכותית) · ${formatTime(s.time)}"))
             content.addView(card().apply { addView(text(s.text, 14f)) })
         }
 
@@ -224,7 +224,7 @@ class MainActivity : Activity() {
                     Actions.onIncoming(this, kids[kidIndex], "בדיקה", "בדיקה", text, System.currentTimeMillis())
                     if (settings.useAi) Work.scheduleAi(this, 0)
                     runOnUiThread {
-                        toast(if (settings.useAi) "נשלח ל-Claude, התוצאה תופיע בעוד רגע" else "נותח")
+                        toast(if (settings.useAi) "נשלח ל-${settings.provider.label}, התוצאה תופיע בעוד רגע" else "נותח")
                         render()
                     }
                 }
@@ -319,54 +319,65 @@ class MainActivity : Activity() {
                 }.show()
         })
 
-        content.addView(header("🤖 סיכום חכם עם Claude (אופציונלי)"))
+        content.addView(header("🤖 סיכום חכם עם בינה מלאכותית (אופציונלי)"))
         content.addView(text(
-            "בלי Claude, האפליקציה מזהה מבחנים, ציוד, אירועים, תשלומים ושינויים לפי מילות מפתח – על המכשיר בלבד. " +
-                "עם Claude ההבנה מדויקת הרבה יותר ומתקבל גם סיכום כתוב, אבל ההודעות מהקבוצות שבחרת נשלחות ל-Anthropic. " +
-                "צריך מפתח API מ-console.anthropic.com (בתשלום לפי שימוש – לכמה עשרות הודעות ביום מדובר בסנטים).",
+            "בלי בינה מלאכותית, האפליקציה מזהה מבחנים, ציוד, אירועים, תשלומים ושינויים לפי מילות מפתח – על המכשיר בלבד. " +
+                "עם Claude או Gemini ההבנה מדויקת הרבה יותר ומתקבל גם סיכום כתוב, אבל ההודעות מהקבוצות שבחרת " +
+                "נשלחות לספק שבחרת (Anthropic או Google). צריך מפתח API משלך.",
             13f, dim = true,
         ))
-        content.addView(switch("להשתמש ב-Claude", settings.aiEnabled) { settings.aiEnabled = it })
+        content.addView(switch("להשתמש בבינה מלאכותית", settings.aiEnabled) { settings.aiEnabled = it })
+
+        val p = settings.provider
+        content.addView(text("ספק", 12f, dim = true).apply { setPadding(0, dp(8), 0, 0) })
+        content.addView(row(*LlmProvider.entries.map { option ->
+            Button(this).apply {
+                text = (if (option == p) "✓ " else "") + option.label
+                isAllCaps = false
+                setTextColor(if (option == p) 0xFFFFFFFF.toInt() else accent)
+                background = rounded(if (option == p) accent else 0x1A5B4BC4)
+                setOnClickListener { settings.provider = option; render() }
+            }.also { it.layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(4), 0, dp(4), 0) } }
+        }.toTypedArray()))
+
         val keyInput = EditText(this).apply {
-            hint = "מפתח API (sk-ant-…)"
+            hint = "מפתח API של ${p.label} (${p.keyHint})"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setText(settings.apiKey)
+            setText(settings.apiKeyFor(p))
         }
         val modelInput = EditText(this).apply {
-            hint = ClaudeExtractor.DEFAULT_MODEL
-            setText(settings.model)
+            hint = p.defaultModel
+            setText(settings.modelFor(p))
         }
+        content.addView(text("מפתח מתקבל ב-${p.keyUrl}", 12f, dim = true).apply { setPadding(0, dp(8), 0, 0) })
         content.addView(keyInput)
-        content.addView(text("מודל", 12f, dim = true))
+        content.addView(text("מודל (ברירת מחדל: ${p.defaultModel})", 12f, dim = true))
         content.addView(modelInput)
+        fun save() {
+            settings.setApiKeyFor(p, keyInput.text.toString())
+            settings.setModelFor(p, modelInput.text.toString())
+        }
         content.addView(row(
-            smallButton("שמור") {
-                settings.apiKey = keyInput.text.toString()
-                settings.model = modelInput.text.toString()
-                toast("נשמר")
-            },
-            smallButton("בדוק חיבור") {
-                settings.apiKey = keyInput.text.toString()
-                settings.model = modelInput.text.toString()
-                testClaude()
-            },
+            smallButton("שמור") { save(); toast("נשמר") },
+            smallButton("בדוק חיבור") { save(); testAi() },
         ))
     }
 
-    private fun testClaude() {
+    private fun testAi() {
         if (settings.apiKey.isBlank()) { toast("צריך להזין מפתח"); return }
-        toast("בודק…")
+        val provider = settings.provider
+        toast("בודק את ${provider.label}…")
         background {
             val msg = try {
                 val now = LocalDateTime.now()
-                val r = ClaudeExtractor(settings.apiKey, settings.model).extract(
+                val r = settings.extractor().extract(
                     listOf(KidMessage(settings.kids.firstOrNull() ?: "מילי",
                         IncomingMessage("בדיקה", "הגננת", "הורים יקרים, מחר יום פיג'מות! להביא פיג'מה ובובה אהובה.", now))),
                     settings.kids, now.toLocalDate(),
                 )
-                "✓ עובד! זוהה: " + r.items.joinToString { it.calendarTitle() }
+                "✓ ${provider.label} עובד!\nזוהה: " + r.items.joinToString { it.calendarTitle() }.ifEmpty { "(כלום)" }
             } catch (e: Exception) {
-                "✗ שגיאה: ${e.message?.take(200)}"
+                "✗ שגיאה: ${e.message?.take(300)}"
             }
             runOnUiThread { AlertDialog.Builder(this).setMessage(msg).setPositiveButton("סגור", null).show() }
         }

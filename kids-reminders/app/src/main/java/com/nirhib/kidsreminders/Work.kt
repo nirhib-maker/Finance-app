@@ -11,7 +11,6 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.nirhib.kidsreminders.core.ClaudeExtractor
 import com.nirhib.kidsreminders.core.DigestBuilder
 import com.nirhib.kidsreminders.core.KidMessage
 import kotlinx.coroutines.Dispatchers
@@ -25,7 +24,7 @@ object Work {
     private const val AI = "ai-batch"
     private const val DIGEST = "evening-digest"
 
-    /** מתזמן ניתוח ב-Claude בעוד 3 דקות (כל הודעה חדשה דוחה את הטיימר – כך נאספות הודעות יחד). */
+    /** מתזמן ניתוח במודל השפה בעוד 3 דקות (כל הודעה חדשה דוחה את הטיימר – כך נאספות הודעות יחד). */
     fun scheduleAi(context: Context, delayMinutes: Long = 3) {
         val req = OneTimeWorkRequestBuilder<AiWorker>()
             .setInitialDelay(delayMinutes, TimeUnit.MINUTES)
@@ -55,7 +54,7 @@ object Work {
     }
 }
 
-/** שולח את ההודעות שעוד לא נותחו ל-Claude. אם נכשל – נופל חזרה לחוקים המקומיים. */
+/** שולח את ההודעות שעוד לא נותחו למודל השפה (Claude / Gemini). אם נכשל – נופל חזרה לחוקים המקומיים. */
 class AiWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val ctx = applicationContext
@@ -70,7 +69,7 @@ class AiWorker(context: Context, params: WorkerParameters) : CoroutineWorker(con
         }
 
         try {
-            val extractor = ClaudeExtractor(settings.apiKey, settings.model)
+            val extractor = settings.extractor()
             val result = extractor.extract(
                 pending.map { KidMessage(it.kid, it.toIncoming()) },
                 settings.kids,
@@ -81,7 +80,7 @@ class AiWorker(context: Context, params: WorkerParameters) : CoroutineWorker(con
             store.markProcessed(pending.map { it.id })
             Result.success()
         } catch (e: Exception) {
-            Log.w("AiWorker", "Claude failed, attempt $runAttemptCount", e)
+            Log.w("AiWorker", "${settings.provider} failed, attempt $runAttemptCount", e)
             if (runAttemptCount < 2) {
                 Result.retry()
             } else {

@@ -1,7 +1,8 @@
 package com.nirhib.kidsreminders
 
 import android.content.Context
-import com.nirhib.kidsreminders.core.ClaudeExtractor
+import com.nirhib.kidsreminders.core.LlmExtractor
+import com.nirhib.kidsreminders.core.LlmProvider
 import org.json.JSONObject
 
 /** הגדרות המשתמש (SharedPreferences פרטיים של האפליקציה). */
@@ -47,13 +48,26 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("aiEnabled", false)
         set(v) = prefs.edit().putBoolean("aiEnabled", v).apply()
 
-    var apiKey: String
-        get() = prefs.getString("apiKey", "") ?: ""
-        set(v) = prefs.edit().putString("apiKey", v.trim()).apply()
+    /** איזה מודל שפה לשמש: Claude או Gemini. */
+    var provider: LlmProvider
+        get() = LlmProvider.parse(prefs.getString("provider", null))
+        set(v) = prefs.edit().putString("provider", v.name).apply()
 
-    var model: String
-        get() = prefs.getString("model", null)?.takeIf { it.isNotBlank() } ?: ClaudeExtractor.DEFAULT_MODEL
-        set(v) = prefs.edit().putString("model", v.trim()).apply()
+    // מפתח ומודל נשמרים לכל ספק בנפרד (המפתחות הישנים "apiKey"/"model" שייכים ל-Claude)
+    private fun keyPref(p: LlmProvider) = if (p == LlmProvider.CLAUDE) "apiKey" else "apiKey_${p.name}"
+    private fun modelPref(p: LlmProvider) = if (p == LlmProvider.CLAUDE) "model" else "model_${p.name}"
+
+    fun apiKeyFor(p: LlmProvider): String = prefs.getString(keyPref(p), "") ?: ""
+    fun setApiKeyFor(p: LlmProvider, v: String) = prefs.edit().putString(keyPref(p), v.trim()).apply()
+
+    fun modelFor(p: LlmProvider): String =
+        prefs.getString(modelPref(p), null)?.takeIf { it.isNotBlank() } ?: p.defaultModel
+    fun setModelFor(p: LlmProvider, v: String) = prefs.edit().putString(modelPref(p), v.trim()).apply()
+
+    val apiKey: String get() = apiKeyFor(provider)
+    val model: String get() = modelFor(provider)
+
+    fun extractor(): LlmExtractor = provider.create(apiKey, model)
 
     val useAi: Boolean get() = aiEnabled && apiKey.isNotBlank()
 }

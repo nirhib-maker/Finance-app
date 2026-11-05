@@ -3,7 +3,10 @@ package com.nirhib.kidsreminders.core
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -140,7 +143,7 @@ class ClaudeExtractorParsingTest {
               {"kid":"לני","type":"EXAM","title":"","date":"","time":"","details":""}
             ]}
         """.trimIndent()
-        val r = ClaudeExtractor.parseResponse(json, listOf("מילי", "רומי", "לני"))
+        val r = ExtractionPrompt.parseResponse(json, listOf("מילי", "רומי", "לני"))
         assertEquals(2, r.items.size)
         assertEquals(LocalDate.of(2026, 11, 10), r.items[0].date)
         assertNull(r.items[1].date)
@@ -149,8 +152,66 @@ class ClaudeExtractorParsingTest {
     }
 
     @Test fun promptContainsContext() {
-        val p = ClaudeExtractor.buildUserPrompt(listOf(KidMessage("מילי", msg("מחר להביא כובע"))), listOf("מילי"), TODAY)
+        val p = ExtractionPrompt.buildUserPrompt(listOf(KidMessage("מילי", msg("מחר להביא כובע"))), listOf("מילי"), TODAY)
         assertTrue(p.contains("Today is 2026-11-05 (Thursday)"))
         assertTrue(p.contains("[child: מילי] [group: גן חבצלת] [2026-11-05 14:00 Thu]"))
+    }
+}
+
+class GeminiExtractorTest {
+    private val kids = listOf("מילי", "רומי", "לני")
+    private val input = listOf(KidMessage("מילי", msg("מחר להביא תחפושת")))
+
+    @Test fun sendsRequestAndParsesAnswer() {
+        val server = MockWebServer()
+        val answer = """{"summary":"מילי: תחפושת מחר","items":[{"kid":"מילי","type":"BRING","title":"להביא תחפושת","date":"2026-11-06","time":"","details":""}]}"""
+        val payload = mapOf(
+            "candidates" to listOf(mapOf(
+                "content" to mapOf("parts" to listOf(
+                    mapOf("text" to "thinking...", "thought" to true),
+                    mapOf("text" to answer),
+                )),
+                "finishReason" to "STOP",
+            ))
+        )
+        server.enqueue(MockResponse().setBody(com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload)))
+        server.start()
+        try {
+            val r = GeminiExtractor("test-key", "gemini-x", baseUrl = server.url("/v1beta").toString().trimEnd('/'))
+                .extract(input, kids, TODAY)
+            assertEquals(ItemType.BRING, r.items.single().type)
+            assertEquals(LocalDate.of(2026, 11, 6), r.items.single().date)
+            assertEquals("מילי: תחפושת מחר", r.summary)
+
+            val req = server.takeRequest()
+            assertEquals("/v1beta/models/gemini-x:generateContent", req.path)
+            assertEquals("test-key", req.getHeader("x-goog-api-key"))
+            val body = req.body.readUtf8()
+            assertTrue(body.contains("\"responseMimeType\":\"application/json\""))
+            assertTrue(body.contains("\"responseSchema\""))
+            assertTrue(body.contains("systemInstruction"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test fun reportsApiErrors() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(400).setBody("""{"error":{"code":400,"message":"API key not valid"}}"""))
+        server.start()
+        try {
+            val e = assertFailsWith<java.io.IOException> {
+                GeminiExtractor("bad", baseUrl = server.url("/v1beta").toString().trimEnd('/')).extract(input, kids, TODAY)
+            }
+            assertTrue(e.message!!.contains("API key not valid"))
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test fun blockedPrompt() {
+        assertFailsWith<IllegalStateException> {
+            GeminiExtractor.extractText("""{"promptFeedback":{"blockReason":"SAFETY"}}""")
+        }
     }
 }

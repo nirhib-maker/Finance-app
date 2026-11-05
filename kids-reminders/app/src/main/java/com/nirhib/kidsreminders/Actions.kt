@@ -15,7 +15,7 @@ object Actions {
         val msg = store.addMessage(kid, group, sender, text, time) ?: return
 
         if (settings.useAi) {
-            // מחכים כמה דקות כדי לאסוף כמה הודעות יחד לבקשה אחת ל-Claude
+            // מחכים כמה דקות כדי לאסוף כמה הודעות יחד לבקשה אחת למודל השפה
             Work.scheduleAi(context)
         } else {
             processWithRules(context, listOf(msg))
