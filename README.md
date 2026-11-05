@@ -5,6 +5,8 @@
 - **תוכנית העבודה וההתקדמות:** [PLAN.md](PLAN.md)
 - **יומן גרסאות:** [CHANGELOG.md](CHANGELOG.md)
 
+> במאגר יש גם אפליקציה נפרדת: [`kids-reminders/`](kids-reminders/README.md) – תזכורות ליומן מקבוצות הוואטסאפ של הגן ובתי הספר (אפליקציית אנדרואיד).
+
 ## התקנה על הטלפון (אנדרואיד)
 1. ב-GitHub: **Settings → Pages → Build and deployment → Source: Deploy from a branch**,
    בוחרים את הענף (branch) הרצוי ותיקייה `/ (root)` ושומרים.
