@@ -1,0 +1,23 @@
+# Runs on an always-on machine in the house (Raspberry Pi / NAS / PC), on the same network as the Switcher.
+#   1. Put boiler-config.json (exported from the app: Settings → "קובץ הגדרות לסוכן") next to this file.
+#   2. docker compose up -d      (logs: docker compose logs -f agent)
+services:
+  switcher:
+    image: tomerfi/switcher_webapi:latest
+    restart: unless-stopped
+    network_mode: host          # the Switcher is reached over the local network
+  agent:
+    image: node:22-alpine
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /app/boiler/agent
+    volumes:
+      - ../:/app/boiler:ro
+      - ./data:/data
+      - ./boiler-config.json:/data/boiler-config.json:ro
+    environment:
+      CONFIG: /data/boiler-config.json
+      STATE: /data/agent-state.json
+      SWITCHER_API: http://127.0.0.1:8000
+      TZ: Asia/Jerusalem
+    command: ["node", "agent.mjs"]
