@@ -19,6 +19,24 @@ let settings = { ...defaultSettings(), ...load(KEY, {}) };
 let weather = load(WKEY, null);
 let tab = 'today';
 let agent = null; // status from the home agent, when the app is served by it
+
+// Inside the Android app the page talks to native code, which reaches the switch over the home Wi-Fi.
+const NATIVE = window.BoilerNative || null;
+let phone = null; // status from the Android app
+const pending = new Map(); let seq = 0;
+window.__nativeResolve = (id, json) => { const cb = pending.get(id); pending.delete(id); cb?.(JSON.parse(json)); };
+const native = (action, payload = {}) => new Promise((resolve) => {
+  const id = String(++seq); pending.set(id, resolve);
+  NATIVE.call(id, action, JSON.stringify(payload));
+});
+async function refreshPhone(first) {
+  phone = await native('status');
+  if (first) {
+    if (phone.settings) { settings = { ...defaultSettings(), ...phone.settings }; save(KEY, settings); }
+    else await native('saveSettings', settings); // first run: hand the current settings to the app
+  }
+  render();
+}
 const view = document.getElementById('view');
 
 const nowIL = () => {
@@ -36,6 +54,7 @@ function toast(msg) {
 }
 function persist() {
   save(KEY, settings); render();
+  if (NATIVE) native('saveSettings', settings).then(() => refreshPhone());
   if (agent) {
     fetch('api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) })
       .then((r) => { if (!r.ok) throw new Error(); setTimeout(refreshAgent, 1500); })
@@ -76,7 +95,7 @@ async function refreshWeather(quiet) {
 
 function plans() {
   if (!weather) return null;
-  return planDays(weather, effectiveSettings(settings, agent?.learn), nowIL().date);
+  return planDays(weather, effectiveSettings(settings, agent?.learn ?? phone?.learn), nowIL().date);
 }
 
 // ---------- Screens ----------
@@ -127,6 +146,25 @@ function agentCard() {
   </div>`;
 }
 
+function phoneCard() {
+  if (!phone) return '';
+  const r = phone.lastSync; const st = r?.state;
+  const when = r?.at ? new Date(r.at).toLocaleString('he-IL', { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : null;
+  const slots = phone.programmed || [];
+  return `<div class="card"><h2>📱 המתג מתוכנת מהטלפון</h2>
+    ${!phone.switcherConfigured ? '<p class="warn">המתג עוד לא הוגדר – ⚙️ הגדרות → "חיפוש המתג ברשת"</p>' : ''}
+    <div class="row"><span>סנכרון אחרון</span><b>${when ? `${when}${r.ok ? ' ✅' : ' ⚠️'}` : 'עוד לא היה'}</b></div>
+    ${r && !r.ok ? `<div class="warn">${esc(r.message)}</div>` : ''}
+    ${st ? `<div class="row"><span>המתג</span><b>${st.on ? `🟢 דולק · ${st.watts.toLocaleString('he-IL')} W` : '⚪ כבוי'}</b></div>` : ''}
+    <div class="row"><span>תזמונים שנכתבו למתג</span><b>${slots.length ? '' : 'אין'}</b></div>
+    ${slots.map((x) => `<div class="row muted"><span>${dayName(x.date)} · ${SESSION_NAME[x.session] || ''}</span><b><bdi dir="ltr">${x.start}–${x.end}</bdi></b></div>`).join('')}
+    ${r?.skipped?.length ? `<div class="warn">אין מקום פנוי במתג ל-${r.skipped.length} תזמונים (מקסימום 8)</div>` : ''}
+    ${phone.learn?.heaterKw ? `<div class="row"><span>הספק גוף החימום (נמדד)</span><b>${phone.learn.heaterKw} קו״ט</b></div>` : ''}
+    <p class="muted">המתג מפעיל את התזמונים בעצמו. הטלפון מעדכן אותם בכל פעם שהוא מחובר ל-Wi-Fi בבית (בערך פעם בשעה).</p>
+    <div class="btns"><button class="btn primary" data-action="sync">🔄 סנכרון עכשיו</button></div>
+  </div>`;
+}
+
 function renderToday() {
   const days = plans();
   if (!days?.length) return `<div class="card"><h2>אין עדיין תחזית</h2><p class="muted">צריך חיבור לאינטרנט כדי להביא את מזג האוויר.</p>
@@ -138,7 +176,7 @@ function renderToday() {
     ? `<div class="card hero"><div class="muted">${na.running ? 'הדוד אמור לפעול עכשיו' : `הפעלה הבאה · ${na.when}`}</div>
         <div class="big">${na.running ? `עד ${na.s.end}` : `${na.s.start} · ${na.s.minutes} דק׳`}</div>
         <div class="muted">למקלחות ה${SESSION_NAME[na.s.session]} (${na.s.sessionTime}) · יעד ${na.s.targetTemp}°</div>
-        ${agent?.switcherConfigured || sw?.baseUrl ? `<div class="btns"><button class="btn primary" data-action="sw-on" data-min="${na.s.minutes}">הדלק עכשיו ל-${na.s.minutes} דק׳</button>
+        ${agent?.switcherConfigured || phone?.switcherConfigured || sw?.baseUrl ? `<div class="btns"><button class="btn primary" data-action="sw-on" data-min="${na.s.minutes}">הדלק עכשיו ל-${na.s.minutes} דק׳</button>
           <button class="btn" data-action="sw-off">כבה</button></div>` : ''}
       </div>`
     : `<div class="card sunny"><h2>☀️ אין צורך להדליק את הדוד</h2><p class="muted">השמש מספיקה לכל המקלחות המתוכננות.</p></div>`;
@@ -149,7 +187,7 @@ function renderToday() {
       <div><b>${today.radiationKwhM2}</b><span class="muted">קרינה קוט״ש/מ״ר</span></div></div>
       <div class="muted" style="margin-top:8px">מים קרים ברשת: כ-${today.coldTemp}° · עלות משוערת היום: ₪${today.cost.toFixed(2)}</div>
     </div>
-    ${agentCard()}
+    ${agentCard()}${phoneCard()}
     ${today.sessions.map(sessionCard).join('')}
     <div class="card"><h2>איך היו המים במקלחת האחרונה?</h2>
       <p class="muted">המשוב מכייל את החישוב לבית שלך (מקדם נוכחי: ${settings.calibration}).</p>
@@ -197,7 +235,7 @@ function renderSettings() {
   return `<div class="card"><h2>מיקום</h2>
       <select data-action="city">${CITIES.map(([n]) => `<option ${n === s.location.name ? 'selected' : ''}>${n}</option>`).join('')}
         ${CITIES.some(([n]) => n === s.location.name) ? '' : `<option selected>${esc(s.location.name)}</option>`}</select>
-      <div class="btns"><button class="btn" data-action="gps">📍 המיקום שלי</button></div></div>
+      ${NATIVE ? '' : '<div class="btns"><button class="btn" data-action="gps">📍 המיקום שלי</button></div>'}</div>
     <div class="card"><h2>הדוד</h2><div class="two">
       <div><label>נפח (ליטר)</label><input type="number" data-set="tank.liters" value="${s.tank.liters}"></div>
       <div><label>גוף חימום (קילוואט)</label><input type="number" step="0.1" data-set="tank.heaterKw" value="${s.tank.heaterKw}"></div>
@@ -214,14 +252,16 @@ function renderSettings() {
       <div><label>עד</label><input type="time" data-set="peak.end" value="${s.peak.end}"></div></div>
       <p class="muted">מתאים אם עברתם לתעריף לפי שעות. בדקו את השעות מול ספק החשמל שלכם.</p></div>
     <div class="card"><h2>שליטה ב-Switcher</h2>
-      ${agent ? '<p>✅ מחובר לסוכן הבית – כל שינוי נשמר אצלו אוטומטית.</p>'
+      ${NATIVE ? `<p class="muted">כשהטלפון ב-Wi-Fi של הבית הוא מוצא את המתג וכותב לתוכו את זמני החימום של 24 השעות הקרובות. התזמונים שלך באפליקציית Switcher לא נמחקים.</p>
+        <div class="btns"><button class="btn primary" data-action="discover">🔍 חיפוש המתג ברשת</button></div>`
+      : agent ? '<p>✅ מחובר לסוכן הבית – כל שינוי נשמר אצלו אוטומטית.</p>'
         : '<p class="muted">ההדלקה האוטומטית נעשית ע״י "סוכן הבית" שרץ על מחשב/Raspberry Pi בבית (ראו README). פתחו את האפליקציה מהכתובת של הסוכן (http://&lt;המחשב&gt;:8080) כדי להתחבר אליו, או הורידו מכאן קובץ הגדרות.</p>'}
-      <div class="two"><div><label>סוג מתג</label><select data-sw="type">${['v4', 'touch', 'v2esp', 'v2qual', 'plug'].map((t) => `<option ${sw.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
+      <div class="two"><div><label>סוג מתג</label><select data-sw="type">${['v4', 'touch', 'mini', 'v2esp', 'v2qual', 'plug'].map((t) => `<option ${sw.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
       <div><label>כתובת IP של המתג</label><input data-sw="ip" value="${esc(sw.ip || '')}" placeholder="192.168.1.50"></div>
       <div><label>מזהה מכשיר (id)</label><input data-sw="id" value="${esc(sw.id || '')}" placeholder="ab1c2d"></div>
       <div><label>מפתח (key, לא חובה)</label><input data-sw="key" value="${esc(sw.key || '')}" placeholder="${agent ? 'נשמר בסוכן' : ''}"></div></div>
-      ${agent ? '' : `<label>כתובת switcher_webapi (לכפתור "הדלק עכשיו", לא חובה)</label><input data-sw="baseUrl" value="${esc(sw.baseUrl || '')}" placeholder="http://192.168.1.10:8000">`}
-      <div class="btns"><button class="btn primary" data-action="export">⬇️ קובץ הגדרות לסוכן</button></div></div>
+      ${agent || NATIVE ? '' : `<label>כתובת switcher_webapi (לכפתור "הדלק עכשיו", לא חובה)</label><input data-sw="baseUrl" value="${esc(sw.baseUrl || '')}" placeholder="http://192.168.1.10:8000">`}
+      ${NATIVE ? '' : '<div class="btns"><button class="btn primary" data-action="export">⬇️ קובץ הגדרות לסוכן</button></div>'}</div>
     <div class="card"><h2>כיול</h2><p class="muted">מקדם כיול נוכחי: ${s.calibration} (מתעדכן לפי המשוב שלך).</p>
       ${agent ? `<p class="muted">כיול אוטומטי ממדידות המתג: ×${agent.learn?.autoFactor ?? 1}${agent.learn?.heaterKw ? ` · הספק נמדד ${agent.learn.heaterKw} קו״ט (במקום ${s.tank.heaterKw})` : ''}.</p>` : ''}
       <div class="btns"><button class="btn" data-action="reset-cal">איפוס כיול</button>${agent ? '<button class="btn" data-action="reset-learn">איפוס למידה אוטומטית</button>' : ''}</div></div>`;
@@ -242,6 +282,12 @@ function setPath(obj, path, val) {
 }
 
 async function switcher(action, minutes) {
+  if (NATIVE) {
+    const r = await native(action === 'turn_on' ? 'on' : 'off', { minutes });
+    toast(r.ok ? (action === 'turn_on' ? `הדוד הודלק ל-${minutes} דקות` : 'הדוד כובה') : `הפעולה נכשלה: ${r.error}`);
+    refreshPhone();
+    return;
+  }
   if (agent) {
     try {
       const res = await fetch('api/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -279,6 +325,20 @@ document.addEventListener('click', (e) => {
   if (a === 'reset-learn') fetch('api/reset-learning', { method: 'POST' }).then(() => refreshAgent());
   if (a === 'sw-on') switcher('turn_on', +t.dataset.min);
   if (a === 'sw-off') switcher('turn_off');
+  if (a === 'sync') {
+    toast('מסנכרן עם המתג…');
+    native('sync').then((r) => { toast(r.ok ? 'המתג עודכן ✅' : r.message); refreshPhone(); });
+  }
+  if (a === 'discover') {
+    toast('מחפש את המתג ברשת (עד 10 שניות)…');
+    native('discover').then((r) => {
+      if (!r.devices?.length) { toast('לא נמצא מתג. ודאו שהטלפון ב-Wi-Fi של הבית'); return; }
+      const d = r.devices[0];
+      settings.switcher = { type: d.type, ip: d.ip, id: d.id, key: d.key };
+      persist();
+      toast(`נמצא: ${d.name || d.type} (${d.ip})${r.devices.length > 1 ? ` – ועוד ${r.devices.length - 1}` : ''}`);
+    });
+  }
   if (a === 'gps') {
     navigator.geolocation?.getCurrentPosition((p) => {
       settings.location = { name: 'המיקום שלי', lat: +p.coords.latitude.toFixed(3), lon: +p.coords.longitude.toFixed(3) };
@@ -300,15 +360,16 @@ document.addEventListener('change', (e) => {
     settings.members = settings.members.map((m, i) => (i === +el.dataset.m ? { ...m, [el.dataset.f]: val } : m));
     persist(); return;
   }
-  if (el.dataset.sw) { settings.switcher = { ...settings.switcher, [el.dataset.sw]: val.trim() }; if (agent) persist(); else save(KEY, settings); return; }
+  if (el.dataset.sw) { settings.switcher = { ...settings.switcher, [el.dataset.sw]: val.trim() }; if (agent || NATIVE) persist(); else save(KEY, settings); return; }
   if (el.dataset.action === 'city') {
     const c = CITIES.find(([n]) => n === el.value);
     if (c) { settings.location = { name: c[0], lat: c[1], lon: c[2] }; persist(); refreshWeather(); }
   }
 });
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator && !NATIVE) navigator.serviceWorker.register('sw.js').catch(() => {});
 render();
 if (!weather || Date.now() - weather.fetched > 30 * 60 * 1000 || weather.loc !== settings.location.name) refreshWeather(true);
-setInterval(() => (agent ? refreshAgent() : render()), 30 * 1000);
-refreshAgent(true); // silently stays standalone when not served by the home agent (e.g. GitHub Pages)
+setInterval(() => (NATIVE ? refreshPhone() : agent ? refreshAgent() : render()), 30 * 1000);
+if (NATIVE) refreshPhone(true);
+else refreshAgent(true); // silently stays standalone when not served by the home agent (e.g. GitHub Pages)

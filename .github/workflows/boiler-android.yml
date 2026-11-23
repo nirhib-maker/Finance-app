@@ -1,0 +1,80 @@
+name: boiler (Android)
+
+on:
+  push:
+    paths:
+      - "boiler/android/**"
+      - "boiler/js/**"
+      - "boiler/css/**"
+      - "boiler/index.html"
+      - ".github/workflows/boiler-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.BOILER_KEYSTORE_BASE64 != '' }}
+    defaults:
+      run:
+        working-directory: boiler/android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # The Kotlin planner must match boiler/js/model.js: regenerate the vectors and fail on any difference.
+      - name: Web tests + planner vectors up to date
+        run: |
+          (cd ../.. && npm test)
+          node tools/planner_vectors.mjs > /tmp/planner_vectors.json
+          diff -q /tmp/planner_vectors.json core/src/test/resources/planner_vectors.json \
+            || { echo "::error::model.js changed – run: node tools/planner_vectors.mjs > core/src/test/resources/planner_vectors.json"; exit 1; }
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # חתימה קבועה (אופציונלי) – ראו boiler/README.md
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.BOILER_KEYSTORE_BASE64 }}
+        if: env.HAS_KEYSTORE == 'true'
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/boiler.jks"
+          echo "BOILER_KEYSTORE_FILE=$RUNNER_TEMP/boiler.jks" >> "$GITHUB_ENV"
+
+      - name: Test & build APK
+        env:
+          BOILER_KEYSTORE_PASSWORD: ${{ secrets.BOILER_KEYSTORE_PASSWORD }}
+          BOILER_KEY_ALIAS: ${{ secrets.BOILER_KEY_ALIAS }}
+          BOILER_KEY_PASSWORD: ${{ secrets.BOILER_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :core:test :app:assembleRelease
+          cp app/build/outputs/apk/release/app-release.apk boiler.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boiler-apk
+          path: boiler/android/boiler.apk
+
+      # קישור הורדה קבוע לטלפון: Releases -> boiler-latest
+      - name: Publish to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: boiler-latest
+          name: דוד חכם – גרסה אחרונה
+          prerelease: true
+          files: boiler/android/boiler.apk
+          body: |
+            APK אחרון שנבנה מהענף ${{ github.ref_name }} (commit ${{ github.sha }}).
+            להתקנה: להוריד את boiler.apk בטלפון ולפתוח. הוראות מלאות ב-boiler/README.md
