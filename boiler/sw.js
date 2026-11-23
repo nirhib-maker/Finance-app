@@ -1,5 +1,5 @@
 // Offline support. Bump CACHE on every release. Weather (other origin) is never cached here.
-const CACHE = 'boiler-v0.1.0';
+const CACHE = 'boiler-v0.2.0';
 const ASSETS = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg', 'css/styles.css', 'js/app.js', 'js/model.js'];
 
 self.addEventListener('install', (e) => {
@@ -11,7 +11,8 @@ self.addEventListener('activate', (e) => {
     .then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', (e) => {
-  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
+  const url = new URL(e.request.url);
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.includes('/api/')) return;
   e.respondWith(fetch(e.request)
     .then((res) => { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return res; })
     .catch(() => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match('index.html'))));

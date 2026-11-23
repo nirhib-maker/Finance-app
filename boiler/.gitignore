@@ -1,3 +1,4 @@
 agent/boiler-config.json
 agent/agent-state.json
 agent/data/
+*.tmp

@@ -101,3 +101,40 @@ test('agent triggers each session once, inside the window', () => {
   done.add(a[0].key);
   assert.equal(dueActions(days, '2026-12-01', 1153, done).length, 0);
 });
+
+import { learnFromRun, effectiveSettings, parseSwitcherState } from '../js/model.js';
+const plan = { targetTemp: 58, sunTemp: 25, coldTemp: 16 };
+
+test('thermostat cut-off means the tank was warmer than modelled → less heating', () => {
+  const s = defaultSettings(); // 150 L, max 65°
+  // 3 kWh lifted 150 L by ~17° → started at ~48°, model thought 25°
+  const { learn, reason } = learnFromRun({}, { plan, energyKwh: 3, avgKw: 2.3, cutoff: true }, s);
+  assert.ok(learn.autoFactor < 1, String(learn.autoFactor));
+  assert.equal(learn.heaterKw, 2.3);
+  assert.match(reason, /התרמוסטט/);
+});
+
+test('long run without cut-off that could not have reached max → more heating', () => {
+  const s = defaultSettings();
+  // 7 kWh = ~39° → start ≤ 26°... use 8 kWh → ≤ 20°, model assumed 25°
+  const { learn } = learnFromRun({ autoFactor: 1 }, { plan, energyKwh: 8, avgKw: 2.4, cutoff: false }, s);
+  assert.ok(learn.autoFactor > 1, String(learn.autoFactor));
+});
+
+test('short run without cut-off teaches nothing about calibration', () => {
+  const { learn } = learnFromRun({ autoFactor: 1 }, { plan, energyKwh: 2, avgKw: 2.4, cutoff: false }, defaultSettings());
+  assert.equal(learn.autoFactor, 1);
+});
+
+test('effective settings use measured power and combined calibration', () => {
+  const s = { ...defaultSettings(), calibration: 1.1 };
+  const e = effectiveSettings(s, { heaterKw: 2.2, autoFactor: 0.9 });
+  assert.equal(e.tank.heaterKw, 2.2);
+  assert.equal(e.calibration, 0.99);
+  assert.equal(effectiveSettings(s, null), s);
+});
+
+test('switcher state parsing', () => {
+  assert.deepEqual(parseSwitcherState({ state: 'ON', power_consumption: '2410', time_left: '00:30:00' }), { on: true, watts: 2410, timeLeft: '00:30:00' });
+  assert.equal(parseSwitcherState({ state: 'OFF', power_consumption: '0' }).on, false);
+});

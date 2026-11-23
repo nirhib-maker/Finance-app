@@ -1,4 +1,6 @@
-import { defaultSettings, planDays, parseOpenMeteo, weatherUrl, applyFeedback, toMin, memberLiters } from './model.js';
+import {
+  defaultSettings, planDays, parseOpenMeteo, weatherUrl, applyFeedback, toMin, memberLiters, effectiveSettings,
+} from './model.js';
 
 const KEY = 'boiler-settings';
 const WKEY = 'boiler-weather';
@@ -16,6 +18,7 @@ const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } cat
 let settings = { ...defaultSettings(), ...load(KEY, {}) };
 let weather = load(WKEY, null);
 let tab = 'today';
+let agent = null; // status from the home agent, when the app is served by it
 const view = document.getElementById('view');
 
 const nowIL = () => {
@@ -31,7 +34,32 @@ function toast(msg) {
   t.textContent = msg; t.classList.add('show');
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
 }
-function persist() { save(KEY, settings); render(); }
+function persist() {
+  save(KEY, settings); render();
+  if (agent) {
+    fetch('api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) })
+      .then((r) => { if (!r.ok) throw new Error(); setTimeout(refreshAgent, 1500); })
+      .catch(() => toast('השמירה בסוכן הבית נכשלה'));
+  }
+}
+
+/** When the app is opened from the home agent (http://<pi>:8080) it talks to it directly. */
+async function refreshAgent(first) {
+  try {
+    const res = await fetch('api/status', { signal: AbortSignal.timeout(4000), cache: 'no-store' });
+    if (!res.ok) throw new Error();
+    agent = await res.json();
+    if (first) {
+      const { key, ...localSw } = settings.switcher || {};
+      settings = { ...settings, ...agent.settings, switcher: { ...localSw, ...agent.switcher } };
+      save(KEY, settings);
+    }
+  } catch {
+    if (agent && !first) toast('אין חיבור לסוכן הבית');
+    if (first) agent = null;
+  }
+  render();
+}
 
 async function refreshWeather(quiet) {
   try {
@@ -48,7 +76,7 @@ async function refreshWeather(quiet) {
 
 function plans() {
   if (!weather) return null;
-  return planDays(weather, settings, nowIL().date);
+  return planDays(weather, effectiveSettings(settings, agent?.learn), nowIL().date);
 }
 
 // ---------- Screens ----------
@@ -81,6 +109,24 @@ function nextAction(days) {
   return null;
 }
 
+function agentCard() {
+  if (!agent) return '';
+  const l = agent.live; const c = agent.current; const learn = agent.learn || {};
+  const stale = !l || Date.now() - l.at > 5 * 60 * 1000;
+  const status = !agent.switcherConfigured ? 'המתג עוד לא הוגדר (⚙️ הגדרות)'
+    : stale ? 'אין קריאה עדכנית מהמתג'
+      : l.on ? `🟢 דולק · ${l.watts.toLocaleString('he-IL')} W${l.watts < 100 ? ' (התרמוסטט ניתק – המים חמים)' : ''}` : '⚪ כבוי';
+  const runs = (agent.runs || []).slice(0, 4);
+  return `<div class="card"><h2>🏠 סוכן הבית${agent.dryRun ? ' (מצב בדיקה)' : ''}</h2>
+    <div class="row"><span>המתג</span><b>${status}</b></div>
+    ${c ? `<div class="row"><span>הריצה הנוכחית</span><b>${c.kwh} קוט״ש${c.cutoffMin != null ? ` · ניתוק אחרי ${c.cutoffMin} דק׳` : ''}</b></div>` : ''}
+    <div class="row"><span>הספק גוף החימום (נמדד)</span><b>${learn.heaterKw ? `${learn.heaterKw} קו״ט` : 'עוד לא נמדד'}</b></div>
+    <div class="row"><span>כיול אוטומטי</span><b>×${learn.autoFactor ?? 1}</b></div>
+    ${runs.length ? `<div class="muted" style="margin-top:8px">ריצות אחרונות:</div>${runs.map((r) => `<div class="row muted"><span>${dayName(r.date)} ${SESSION_NAME[r.session]} · ${r.kwh} קוט״ש${r.cutoffMin != null ? ` · ניתוק ב-${r.cutoffMin}′` : ''}</span></div>
+      <div class="muted" style="font-size:.8rem">${esc(r.reason)}</div>`).join('')}` : ''}
+  </div>`;
+}
+
 function renderToday() {
   const days = plans();
   if (!days?.length) return `<div class="card"><h2>אין עדיין תחזית</h2><p class="muted">צריך חיבור לאינטרנט כדי להביא את מזג האוויר.</p>
@@ -92,7 +138,7 @@ function renderToday() {
     ? `<div class="card hero"><div class="muted">${na.running ? 'הדוד אמור לפעול עכשיו' : `הפעלה הבאה · ${na.when}`}</div>
         <div class="big">${na.running ? `עד ${na.s.end}` : `${na.s.start} · ${na.s.minutes} דק׳`}</div>
         <div class="muted">למקלחות ה${SESSION_NAME[na.s.session]} (${na.s.sessionTime}) · יעד ${na.s.targetTemp}°</div>
-        ${sw?.baseUrl ? `<div class="btns"><button class="btn primary" data-action="sw-on" data-min="${na.s.minutes}">הדלק עכשיו ל-${na.s.minutes} דק׳</button>
+        ${agent?.switcherConfigured || sw?.baseUrl ? `<div class="btns"><button class="btn primary" data-action="sw-on" data-min="${na.s.minutes}">הדלק עכשיו ל-${na.s.minutes} דק׳</button>
           <button class="btn" data-action="sw-off">כבה</button></div>` : ''}
       </div>`
     : `<div class="card sunny"><h2>☀️ אין צורך להדליק את הדוד</h2><p class="muted">השמש מספיקה לכל המקלחות המתוכננות.</p></div>`;
@@ -103,6 +149,7 @@ function renderToday() {
       <div><b>${today.radiationKwhM2}</b><span class="muted">קרינה קוט״ש/מ״ר</span></div></div>
       <div class="muted" style="margin-top:8px">מים קרים ברשת: כ-${today.coldTemp}° · עלות משוערת היום: ₪${today.cost.toFixed(2)}</div>
     </div>
+    ${agentCard()}
     ${today.sessions.map(sessionCard).join('')}
     <div class="card"><h2>איך היו המים במקלחת האחרונה?</h2>
       <p class="muted">המשוב מכייל את החישוב לבית שלך (מקדם נוכחי: ${settings.calibration}).</p>
@@ -167,15 +214,17 @@ function renderSettings() {
       <div><label>עד</label><input type="time" data-set="peak.end" value="${s.peak.end}"></div></div>
       <p class="muted">מתאים אם עברתם לתעריף לפי שעות. בדקו את השעות מול ספק החשמל שלכם.</p></div>
     <div class="card"><h2>שליטה ב-Switcher</h2>
-      <p class="muted">ההדלקה האוטומטית נעשית ע״י "סוכן הבית" שרץ על מחשב/Raspberry Pi בבית (ראו README). כאן ממלאים את פרטי המתג ומורידים קובץ הגדרות לסוכן.</p>
+      ${agent ? '<p>✅ מחובר לסוכן הבית – כל שינוי נשמר אצלו אוטומטית.</p>'
+        : '<p class="muted">ההדלקה האוטומטית נעשית ע״י "סוכן הבית" שרץ על מחשב/Raspberry Pi בבית (ראו README). פתחו את האפליקציה מהכתובת של הסוכן (http://&lt;המחשב&gt;:8080) כדי להתחבר אליו, או הורידו מכאן קובץ הגדרות.</p>'}
       <div class="two"><div><label>סוג מתג</label><select data-sw="type">${['v4', 'touch', 'v2esp', 'v2qual', 'plug'].map((t) => `<option ${sw.type === t ? 'selected' : ''}>${t}</option>`).join('')}</select></div>
       <div><label>כתובת IP של המתג</label><input data-sw="ip" value="${esc(sw.ip || '')}" placeholder="192.168.1.50"></div>
       <div><label>מזהה מכשיר (id)</label><input data-sw="id" value="${esc(sw.id || '')}" placeholder="ab1c2d"></div>
-      <div><label>מפתח (key, לא חובה)</label><input data-sw="key" value="${esc(sw.key || '')}"></div></div>
-      <label>כתובת switcher_webapi (לכפתור "הדלק עכשיו", לא חובה)</label><input data-sw="baseUrl" value="${esc(sw.baseUrl || '')}" placeholder="http://192.168.1.10:8000">
+      <div><label>מפתח (key, לא חובה)</label><input data-sw="key" value="${esc(sw.key || '')}" placeholder="${agent ? 'נשמר בסוכן' : ''}"></div></div>
+      ${agent ? '' : `<label>כתובת switcher_webapi (לכפתור "הדלק עכשיו", לא חובה)</label><input data-sw="baseUrl" value="${esc(sw.baseUrl || '')}" placeholder="http://192.168.1.10:8000">`}
       <div class="btns"><button class="btn primary" data-action="export">⬇️ קובץ הגדרות לסוכן</button></div></div>
     <div class="card"><h2>כיול</h2><p class="muted">מקדם כיול נוכחי: ${s.calibration} (מתעדכן לפי המשוב שלך).</p>
-      <div class="btns"><button class="btn" data-action="reset-cal">איפוס כיול</button></div></div>`;
+      ${agent ? `<p class="muted">כיול אוטומטי ממדידות המתג: ×${agent.learn?.autoFactor ?? 1}${agent.learn?.heaterKw ? ` · הספק נמדד ${agent.learn.heaterKw} קו״ט (במקום ${s.tank.heaterKw})` : ''}.</p>` : ''}
+      <div class="btns"><button class="btn" data-action="reset-cal">איפוס כיול</button>${agent ? '<button class="btn" data-action="reset-learn">איפוס למידה אוטומטית</button>' : ''}</div></div>`;
 }
 
 const TITLES = { today: 'היום', forecast: '3 ימים קדימה', family: 'בני הבית', settings: 'הגדרות' };
@@ -193,6 +242,16 @@ function setPath(obj, path, val) {
 }
 
 async function switcher(action, minutes) {
+  if (agent) {
+    try {
+      const res = await fetch('api/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: action === 'turn_on' ? 'on' : 'off', minutes }) });
+      if (!res.ok) throw new Error((await res.json()).error);
+      toast(action === 'turn_on' ? `הדוד הודלק ל-${minutes} דקות` : 'הדוד כובה');
+      setTimeout(refreshAgent, 1500);
+    } catch (e) { toast(`הפעולה נכשלה: ${e.message || 'אין חיבור לסוכן'}`); }
+    return;
+  }
   const sw = settings.switcher || {};
   const q = new URLSearchParams({ type: sw.type || 'v4', id: sw.id || '', ip: sw.ip || '' });
   if (sw.key) q.set('key', sw.key);
@@ -217,6 +276,7 @@ document.addEventListener('click', (e) => {
   if (a === 'add-member') { settings.members = [...settings.members, { id: `m${Date.now()}`, name: 'חדש/ה', kind: 'shower', minutes: 8, session: 'evening' }]; persist(); }
   if (a === 'del-member') { settings.members = settings.members.filter((_, i) => i !== +t.dataset.i); persist(); }
   if (a === 'reset-cal') { settings.calibration = 1; persist(); }
+  if (a === 'reset-learn') fetch('api/reset-learning', { method: 'POST' }).then(() => refreshAgent());
   if (a === 'sw-on') switcher('turn_on', +t.dataset.min);
   if (a === 'sw-off') switcher('turn_off');
   if (a === 'gps') {
@@ -240,7 +300,7 @@ document.addEventListener('change', (e) => {
     settings.members = settings.members.map((m, i) => (i === +el.dataset.m ? { ...m, [el.dataset.f]: val } : m));
     persist(); return;
   }
-  if (el.dataset.sw) { settings.switcher = { ...settings.switcher, [el.dataset.sw]: val.trim() }; save(KEY, settings); return; }
+  if (el.dataset.sw) { settings.switcher = { ...settings.switcher, [el.dataset.sw]: val.trim() }; if (agent) persist(); else save(KEY, settings); return; }
   if (el.dataset.action === 'city') {
     const c = CITIES.find(([n]) => n === el.value);
     if (c) { settings.location = { name: c[0], lat: c[1], lon: c[2] }; persist(); refreshWeather(); }
@@ -250,4 +310,5 @@ document.addEventListener('change', (e) => {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 render();
 if (!weather || Date.now() - weather.fetched > 30 * 60 * 1000 || weather.loc !== settings.location.name) refreshWeather(true);
-setInterval(render, 60 * 1000);
+setInterval(() => (agent ? refreshAgent() : render()), 30 * 1000);
+refreshAgent(true); // silently stays standalone when not served by the home agent (e.g. GitHub Pages)

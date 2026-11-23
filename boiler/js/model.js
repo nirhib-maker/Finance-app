@@ -186,3 +186,62 @@ export function dueActions(days, nowDate, nowMin, done, graceMin = 15) {
   }
   return out;
 }
+
+// ---------- Learning from the Switcher's power readings ----------
+
+/** Settings as the agent really runs them: measured heater power, user × automatic calibration. */
+export function effectiveSettings(settings, learn) {
+  if (!learn) return settings;
+  return {
+    ...settings,
+    tank: { ...settings.tank, heaterKw: learn.heaterKw || settings.tank.heaterKw },
+    calibration: round(clamp((settings.calibration || 1) * (learn.autoFactor || 1), 0.5, 2), 2),
+  };
+}
+
+/**
+ * Learn from one finished heating run.
+ * run: { plan (the session plan it executed), energyKwh (measured), avgKw (mean power while heating),
+ *        cutoff (true when the thermostat cut the power while the switch was still on) }
+ * The thermostat cut-off is the only temperature "sensor" we have: at that moment the tank is at maxTemp,
+ * so the temperature it started from = maxTemp − energy put in. Comparing that with what the model assumed
+ * (cold water + sun) tells how wrong the model was.
+ * Returns the new learn state and a human readable reason.
+ */
+export function learnFromRun(learn, run, settings) {
+  const next = { autoFactor: 1, heaterKw: null, ...learn };
+  const p = run.plan;
+  const V = settings.tank.liters;
+  const notes = [];
+
+  if (run.avgKw > 0.3) {
+    next.heaterKw = round(next.heaterKw ? next.heaterKw * 0.5 + run.avgKw * 0.5 : run.avgKw, 2);
+    notes.push(`הספק נמדד ${round(run.avgKw, 2)} קו״ט`);
+  }
+
+  const heatedDeg = (run.energyKwh * 0.98) / (V * KWH_PER_L_DEG);
+  const startBound = settings.tank.maxTemp - heatedDeg; // exact on cut-off, an upper bound otherwise
+  const modelNeed = p.targetTemp - p.sunTemp;          // degrees the model planned to add
+  const userCal = settings.calibration || 1;
+  let ideal = null;
+
+  if (modelNeed >= 3 && run.cutoff) {
+    ideal = Math.max(0, p.targetTemp - startBound) / modelNeed;
+    notes.push(`התרמוסטט ניתק – המים היו כ-${Math.round(startBound)}° בתחילת החימום (המודל הניח ${p.sunTemp}°)`);
+  } else if (modelNeed >= 3 && startBound < p.sunTemp - 2) {
+    // Ran the whole time and still could not have reached maxTemp: the tank started colder than assumed.
+    ideal = (p.targetTemp - startBound) / modelNeed;
+    notes.push(`המים היו לכל היותר ${Math.round(startBound)}° בהתחלה – קרים מהצפוי`);
+  }
+
+  if (ideal != null) {
+    const target = clamp(ideal / userCal, 0.5, 1.6);
+    next.autoFactor = round(next.autoFactor + 0.3 * (target - next.autoFactor), 2);
+  }
+  return { learn: next, reason: notes.join('; ') || 'אין מספיק מידע לכיול מהריצה הזו' };
+}
+
+/** Parse the switcher_webapi get_state response. */
+export function parseSwitcherState(j) {
+  return { on: String(j.state).toUpperCase() === 'ON', watts: Number(j.power_consumption) || 0, timeLeft: j.time_left || null };
+}
