@@ -1,0 +1,24 @@
+# Runs on an always-on machine in the house (Raspberry Pi / NAS / PC), on the same network as the Switcher.
+#   docker compose up -d            (logs: docker compose logs -f agent)
+# Then open http://<this-machine-ip>:8080 on the phone and fill in the settings (they are saved in ./data).
+services:
+  switcher:
+    image: tomerfi/switcher_webapi:latest
+    restart: unless-stopped
+    network_mode: host          # the Switcher is reached over the local network (API on port 8000)
+  agent:
+    image: node:22-alpine
+    restart: unless-stopped
+    network_mode: host          # app + API on port 8080
+    working_dir: /app/boiler/agent
+    volumes:
+      - ../:/app/boiler:ro
+      - ./data:/data            # boiler-config.json (settings + switcher details) and agent-state.json (learning)
+    environment:
+      CONFIG: /data/boiler-config.json
+      STATE: /data/agent-state.json
+      SWITCHER_API: http://127.0.0.1:8000
+      PORT: "8080"
+      TZ: Asia/Jerusalem
+      # DRY_RUN: "1"            # uncomment for a first run that only logs, without switching
+    command: ["node", "agent.mjs"]

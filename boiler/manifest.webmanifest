@@ -1,0 +1,14 @@
+{
+  "name": "דוד חכם",
+  "short_name": "דוד חכם",
+  "description": "תכנון חימום הדוד לפי מזג האוויר וצריכת המים",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f4f2",
+  "theme_color": "#c2410c",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
